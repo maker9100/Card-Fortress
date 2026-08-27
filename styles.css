@@ -35,3 +35,7 @@ button,.linkbtn{width:100%;min-height:52px;border:0;border-radius:14px;padding:1
 @media(max-width:390px){
   .max-player-grid{grid-template-columns:repeat(3,1fr)}
 }
+
+.accountbox{display:grid;gap:8px;margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:15px;background:#0d1b14}
+.googlebtn{background:#fff;color:#202124;border:1px solid #dadce0;display:flex;align-items:center;justify-content:center;gap:10px}
+.googleG{font-family:Arial,sans-serif;font-size:20px;font-weight:900;color:#4285f4}

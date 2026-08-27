@@ -1,5 +1,8 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
+import {
+  getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider,
+  signInWithPopup, linkWithPopup, signOut
+} from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 import { getDatabase, ref, get, set, update, remove, onValue, runTransaction, onDisconnect } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-database.js";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -86,12 +89,65 @@ async function secureGameTx(mutator){
 }
 
 
+function renderAccount(u){
+  const status=$("accountStatus"), login=$("googleLoginBtn"), logout=$("googleLogoutBtn");
+  if(!status||!login||!logout)return;
+  const isGoogle=!!u?.providerData?.some(p=>p.providerId==="google.com");
+  if(isGoogle){
+    status.textContent=`✅ ${u.displayName||u.email||"Google 사용자"} 로그인됨`;
+    login.style.display="none"; logout.style.display="block";
+    if(!$("nicknameInput").value && u.displayName) $("nicknameInput").value=normalizeName(u.displayName);
+  }else{
+    status.textContent=u?"👤 게스트로 접속 중":"연결 준비 중...";
+    login.style.display="block"; logout.style.display="none";
+  }
+}
+
+async function googleLogin(){
+  if(!auth)return;
+  setError("");
+  const provider=new GoogleAuthProvider();
+  provider.setCustomParameters({prompt:"select_account"});
+  try{
+    // 익명 계정이면 Google 계정에 연결해서 같은 UID를 최대한 유지한다.
+    if(auth.currentUser?.isAnonymous){
+      try{
+        await linkWithPopup(auth.currentUser,provider);
+      }catch(e){
+        if(["auth/credential-already-in-use","auth/email-already-in-use","auth/provider-already-linked"].includes(e.code)){
+          await signInWithPopup(auth,provider);
+        }else throw e;
+      }
+    }else{
+      await signInWithPopup(auth,provider);
+    }
+  }catch(e){
+    console.error(e);
+    if(e.code!=="auth/popup-closed-by-user" && e.code!=="auth/cancelled-popup-request")
+      setError("Google 로그인 실패: "+(e.message||e.code));
+  }
+}
+
+async function switchToGuest(){
+  if(roomCode){setError("방에서 나온 뒤 계정을 전환하세요.");return}
+  try{await signOut(auth);await signInAnonymously(auth)}catch(e){setError("게스트 전환 실패: "+e.message)}
+}
+
 async function boot(){
   if(!configLooksReady()){setError("Firebase 설정 필요");return}
   try{
     app=initializeApp(firebaseConfig);auth=getAuth(app);db=getDatabase(app);
-    await signInAnonymously(auth);
-    onAuthStateChanged(auth,u=>{user=u;$("connectionBadge").classList.toggle("online",!!u)})
+    let initialized=false;
+    onAuthStateChanged(auth,async u=>{
+      if(!u && !initialized){
+        initialized=true;
+        try{await signInAnonymously(auth)}catch(e){console.error(e);setError("게스트 로그인 실패: "+e.message)}
+        return;
+      }
+      initialized=true; user=u;
+      $("connectionBadge").classList.toggle("online",!!u);
+      renderAccount(u);
+    });
   }catch(e){console.error(e);setError("Firebase 연결 실패: "+e.message)}
 }
 
@@ -489,6 +545,7 @@ async function leaveRoom(){
 }
 
 /* ---------- EVENTS ---------- */
+$("googleLoginBtn").onclick=googleLogin;$("googleLogoutBtn").onclick=switchToGuest;
 $("createRoomBtn").onclick=createRoom;$("joinRoomBtn").onclick=joinRoom;$("readyBtn").onclick=toggleReady;$("startOnlineBtn").onclick=startOnline;
 $("leaveRoomBtn").onclick=leaveRoom;$("leaveGameBtn").onclick=leaveRoom;$("pokerLeaveBtn").onclick=leaveRoom;$("jokerLeaveBtn").onclick=leaveRoom;$("doubtLeaveBtn").onclick=leaveRoom;$("resultLeaveBtn").onclick=leaveRoom;$("backLobbyBtn").onclick=backLobby;
 $("ocDrawBtn").onclick=ocDraw;

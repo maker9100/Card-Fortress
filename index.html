@@ -18,6 +18,15 @@
   <section id="homeScreen" class="screen active panel">
     <h2>온라인 플레이</h2>
     <p class="muted">친구들과 각자 자기 기기에서 접속합니다.</p>
+
+    <div class="accountbox">
+      <div id="accountStatus" class="muted">게스트 연결 준비 중...</div>
+      <button id="googleLoginBtn" class="googlebtn" type="button">
+        <span class="googleG">G</span> Google 계정으로 로그인
+      </button>
+      <button id="googleLogoutBtn" class="secondary" type="button" style="display:none">게스트로 전환</button>
+    </div>
+
     <label class="field"><span>닉네임</span><input id="nicknameInput" maxlength="12" placeholder="닉네임"></label>
     <button id="createRoomBtn" class="primary">방 만들기</button>
     <div class="divider">또는</div>
