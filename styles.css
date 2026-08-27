@@ -18,3 +18,20 @@ button,.linkbtn{width:100%;min-height:52px;border:0;border-radius:14px;padding:1
   border:4px solid #eee9dc;color:#fff;display:grid;place-items:center;
   font-size:29px;box-shadow:0 6px 14px rgba(0,0,0,.3);cursor:pointer
 }
+
+.max-player-grid{
+  grid-template-columns:repeat(3,1fr);
+}
+.maxpbtn{
+  min-height:44px;
+  font-size:13px;
+  background:#244235;
+  color:var(--text);
+}
+.maxpbtn.selected{
+  background:var(--gold);
+  color:#231d0c;
+}
+@media(max-width:390px){
+  .max-player-grid{grid-template-columns:repeat(3,1fr)}
+}

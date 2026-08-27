@@ -19,6 +19,73 @@ function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,ch=>({"&":"&amp;"
 function configLooksReady(){return firebaseConfig.apiKey&&!firebaseConfig.apiKey.includes("YOUR_")&&firebaseConfig.databaseURL}
 function modeLabel(m){return m==="onecard"?"⚡ 원카드":m==="poker"?"♠ 포커":m==="joker"?"🃏 조커뽑기":"🎭 다우트"}
 
+const AC_MAX_ROOM_PLAYERS=4;
+const AC_VALID_MODES=new Set(["onecard","poker","joker","doubt"]);
+
+function antiCheatFail(reason){
+  console.warn("[CARD FORTRESS Anti-Cheat]",reason);
+  const el=document.querySelector(".screen.active .msg");
+  if(el) el.textContent="⚠ 잘못된 게임 상태가 감지되었습니다.";
+}
+
+function validateRoomSnapshot(room){
+  if(!room || typeof room!=="object") return false;
+  const players=room.players||{};
+  const ids=Object.keys(players);
+  if(ids.length<1 || ids.length>AC_MAX_ROOM_PLAYERS) return false;
+  if(!room.hostUid || !players[room.hostUid]) return false;
+  if(room.mode && !AC_VALID_MODES.has(room.mode)) return false;
+
+  for(const id of ids){
+    const p=players[id];
+    if(!p || typeof p.name!=="string" || p.name.length<1 || p.name.length>12) return false;
+    if(typeof p.seat!=="number" || p.seat<0 || p.seat>3) return false;
+  }
+
+  const g=room.game;
+  if(g){
+    if(g.order && (!Array.isArray(g.order) || g.order.length<2 || g.order.length>4)) return false;
+    if(g.turnUid && !players[g.turnUid]) return false;
+
+    if(g.tokens){
+      for(const v of Object.values(g.tokens)){
+        if(typeof v!=="number" || !Number.isFinite(v) || v<0 || v>100000) return false;
+      }
+    }
+    if(typeof g.pot==="number" && (g.pot<0 || g.pot>400000)) return false;
+
+    if(g.hands){
+      for(const h of Object.values(g.hands)){
+        if(!Array.isArray(h) || h.length>60) return false;
+      }
+    }
+
+    if(typeof g.rev==="number" && (g.rev<0 || !Number.isInteger(g.rev))) return false;
+  }
+  return true;
+}
+
+async function secureGameTx(mutator){
+  return runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+    if(!g) return g;
+
+    // 현재 방 참가자가 아니면 어떤 게임 액션도 허용하지 않음.
+    if(!roomData?.players?.[user?.uid]){
+      antiCheatFail("room member check failed");
+      return g;
+    }
+
+    const oldRev=Number.isInteger(g.rev)?g.rev:0;
+    const result=mutator(g);
+    if(!result) return result;
+
+    result.rev=oldRev+1;
+    result.lastActor=user.uid;
+    return result;
+  });
+}
+
+
 async function boot(){
   if(!configLooksReady()){setError("Firebase 설정 필요");return}
   try{
@@ -79,7 +146,12 @@ async function enterRoom(code){
   const pr=ref(db,`rooms/${code}/players/${user.uid}`);try{onDisconnect(pr).remove()}catch(e){}
   roomUnsub=onValue(ref(db,"rooms/"+code),snap=>{
     if(!snap.exists()){roomData=null;roomCode=null;show("homeScreen");setError("방이 종료되었습니다.");return}
-    roomData=snap.val();renderRoom()
+    roomData=snap.val();
+    if(!validateRoomSnapshot(roomData)){
+      antiCheatFail("invalid room snapshot");
+      return;
+    }
+    renderRoom()
   });
   show("lobbyScreen")
 }
@@ -91,7 +163,8 @@ async function toggleReady(){
   const me=roomData?.players?.[user.uid];if(me)await update(ref(db,`rooms/${roomCode}/players/${user.uid}`),{ready:!me.ready})
 }
 async function setMode(mode){
-  if(roomData?.hostUid!==user.uid)return;
+  if(roomData?.hostUid!==user.uid) return;
+  if(!AC_VALID_MODES.has(mode)){antiCheatFail("invalid mode");return;}
   await update(ref(db,`rooms/${roomCode}`),{mode})
 }
 function renderRoom(){
@@ -115,8 +188,10 @@ function renderRoom(){
 
 /* ---------- START DISPATCH ---------- */
 async function startOnline(){
-  if(roomData.hostUid!==user.uid)return;
-  const ps=sortedPlayers();if(ps.length<2||!ps.every(p=>p.ready))return;
+  if(roomData?.hostUid!==user.uid) return;
+  if(roomData?.status!=="lobby"){antiCheatFail("start outside lobby");return;}
+  const ps=sortedPlayers();
+  if(ps.length<2||ps.length>4||!ps.every(p=>p.ready)) return;
   if(roomData.mode==="onecard")await startOneCard(ps);
   else if(roomData.mode==="poker")await startPoker(ps);
   else if(roomData.mode==="joker")await startJoker(ps);
@@ -143,7 +218,7 @@ async function startOneCard(ps){
   const deck=makeOneCardDeck(),hands={};ps.forEach(p=>hands[p.uid]=[]);
   for(let r=0;r<7;r++)ps.forEach(p=>hands[p.uid].push(deck.pop()));
   let si=deck.findIndex(c=>!c.joker&&!["A","2","J","Q","K","7"].includes(c.rank));if(si<0)si=0;const starter=deck.splice(si,1)[0];
-  const game={type:"onecard",order:ps.map(p=>p.uid),turnUid:ps[0].uid,direction:1,pendingDraw:0,chosenSuit:null,extraChain:false,deck,discard:[starter],topCard:starter,hands,eliminated:{},winnerUid:null,message:"게임 시작"};
+  const game={type:"onecard",order:ps.map(p=>p.uid),turnUid:ps[0].uid,direction:1,pendingDraw:0,chosenSuit:null,extraChain:false,deck,discard:[starter],topCard:starter,hands,eliminated:{},winnerUid:null,message:"게임 시작",rev:0,lastActor:user.uid};
   await update(ref(db,"rooms/"+roomCode),{status:"playing",mode:"onecard",game})
 }
 function renderOneCard(){
@@ -157,7 +232,7 @@ function renderOneCard(){
 }
 async function playOneCard(index){
   let need=false;
-  const tx=await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+  const tx=await secureGameTx(g=>{
     if(!g||g.winnerUid||g.turnUid!==user.uid)return g;const h=(g.hands?.[user.uid]||[]).slice(),c=h[index];if(!c||!canPlay(g,c))return g;
     const before=g.topCard,block=g.pendingDraw>0&&before?.rank==="2"&&c.rank==="3"&&c.suit===before.suit;
     h.splice(index,1);g.hands[user.uid]=h;g.discard.push(c);g.topCard=c;if(block)g.pendingDraw=0;else{const a=attackValue(c);if(a)g.pendingDraw=(g.pendingDraw||0)+a}g.chosenSuit=null;
@@ -170,11 +245,11 @@ async function playOneCard(index){
   if(tx.committed&&need){pendingSeven=true;show("suitScreen")}
 }
 async function chooseSuit(s){
-  const tx=await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{if(!g||g.waitingSuitUid!==user.uid)return g;g.chosenSuit=s;g.waitingSuitUid=null;g.extraChain=false;g.turnUid=nextUid(g,user.uid,1);return g});
+  const tx=await secureGameTx(g=>{if(!g||g.waitingSuitUid!==user.uid)return g;g.chosenSuit=s;g.waitingSuitUid=null;g.extraChain=false;g.turnUid=nextUid(g,user.uid,1);return g});
   if(tx.committed){pendingSeven=false;show("onecardScreen")}
 }
 async function ocDraw(){
-  await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+  await secureGameTx(g=>{
     if(!g||g.turnUid!==user.uid||g.waitingSuitUid)return g;if(g.extraChain){g.extraChain=false;g.turnUid=nextUid(g,user.uid,1);return g}
     const h=(g.hands?.[user.uid]||[]).slice(),n=g.pendingDraw||1;h.push(...drawState(g,n));g.hands[user.uid]=h;g.pendingDraw=0;g.chosenSuit=null;
     if(h.length>20){g.eliminated[user.uid]=true;const alive=g.order.filter(id=>!g.eliminated[id]);if(alive.length===1)g.winnerUid=alive[0];else g.turnUid=nextUid(g,user.uid,1);return g}
@@ -211,7 +286,7 @@ function eval5(h){
 function cmpScore(a,b){if(a.cat!==b.cat)return a.cat-b.cat;for(let i=0;i<Math.max(a.tie.length,b.tie.length);i++){const d=(a.tie[i]||0)-(b.tie[i]||0);if(d)return d}return 0}
 async function startPoker(ps){
   const deck=makePokerDeck(),hands={},initial={},tokens={};ps.forEach(p=>{initial[p.uid]=[deck.pop(),deck.pop()];hands[p.uid]=[];tokens[p.uid]=100});
-  const game={type:"poker",order:ps.map(p=>p.uid),deck,initial,hands,tokens,ante:2,pot:0,round:1,maxRounds:5,phase:"discard",turnUid:ps[0].uid,discarded:{},bets:{},folded:{},currentBet:0,acted:{},winnerUid:null,message:"2장 중 버릴 카드를 선택"};
+  const game={type:"poker",order:ps.map(p=>p.uid),deck,initial,hands,tokens,ante:2,pot:0,round:1,maxRounds:5,phase:"discard",turnUid:ps[0].uid,discarded:{},bets:{},folded:{},currentBet:0,acted:{},winnerUid:null,message:"2장 중 버릴 카드를 선택",rev:0,lastActor:user.uid};
   ps.forEach(p=>{game.tokens[p.uid]-=2;game.pot+=2});
   await update(ref(db,"rooms/"+roomCode),{status:"playing",mode:"poker",game})
 }
@@ -235,13 +310,13 @@ function renderPoker(){
   }
 }
 async function pokerDiscard(idx){
-  await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+  await secureGameTx(g=>{
     if(!g||g.phase!=="discard"||g.turnUid!==user.uid)return g;const init=g.initial[user.uid],keep=init[1-idx];g.hands[user.uid]=[keep,g.deck.pop(),g.deck.pop(),g.deck.pop(),g.deck.pop()];g.discarded[user.uid]=true;
     const next=g.order.find(id=>!g.discarded[id]);if(next)g.turnUid=next;else{g.phase="bet";g.bets={};g.acted={};g.order.forEach(id=>g.bets[id]=0);g.currentBet=0;g.turnUid=g.order[0]}return g
   })
 }
 async function pokerBet(action){
-  await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+  await secureGameTx(g=>{
     if(!g||g.phase!=="bet"||g.turnUid!==user.uid)return g;const b=g.bets[user.uid]||0,tok=g.tokens[user.uid]||0,toCall=Math.max(0,g.currentBet-b);
     if(action==="fold"){g.folded[user.uid]=true;g.acted[user.uid]=true}
     else if(action==="call"){const pay=Math.min(tok,toCall);g.tokens[user.uid]-=pay;g.bets[user.uid]+=pay;g.pot+=pay;g.acted[user.uid]=true}
@@ -301,7 +376,7 @@ async function startJoker(ps){
   ps.forEach(p=>hands[p.uid]=[]);
   let i=0;while(deck.length){hands[ps[i%ps.length].uid].push(deck.pop());i++}
   Object.keys(hands).forEach(id=>hands[id]=shuffle(removeJokerPairs(hands[id])));
-  const g={type:"joker",order:ps.map(p=>p.uid),hands,turnUid:ps.find(p=>hands[p.uid].length>0)?.uid||ps[0].uid,winnerUid:null,loserUid:null,message:"상대 카드 한 장을 뽑으세요."};
+  const g={type:"joker",order:ps.map(p=>p.uid),hands,turnUid:ps.find(p=>hands[p.uid].length>0)?.uid||ps[0].uid,winnerUid:null,loserUid:null,message:"상대 카드 한 장을 뽑으세요.",rev:0,lastActor:user.uid};
   await update(ref(db,"rooms/"+roomCode),{status:"playing",mode:"joker",game:g})
 }
 function checkJokerEnd(g){
@@ -332,7 +407,7 @@ function renderJoker(){
   $("jokerShuffleBtn").disabled=!mine
 }
 async function jokerTake(index){
-  await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+  await secureGameTx(g=>{
     if(!g||g.turnUid!==user.uid||g.winnerUid)return g;
     const targetId=jokerTarget(g,user.uid);if(!targetId)return g;
     const th=(g.hands[targetId]||[]).slice();if(index<0||index>=th.length)return g;
@@ -343,7 +418,7 @@ async function jokerTake(index){
   })
 }
 async function jokerShuffle(){
-  await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+  await secureGameTx(g=>{
     if(!g||g.turnUid!==user.uid)return g;
     g.hands[user.uid]=shuffle((g.hands[user.uid]||[]).slice());return g
   })
@@ -352,7 +427,7 @@ async function jokerShuffle(){
 /* ---------- DOUBT ---------- */
 async function startDoubt(ps){
   const deck=make52(),hands={};ps.forEach(p=>hands[p.uid]=[]);let i=0;while(deck.length){hands[ps[i%ps.length].uid].push(deck.pop());i++}
-  const g={type:"doubt",order:ps.map(p=>p.uid),hands,pile:[],turnUid:ps[0].uid,lastPlay:null,pendingChallenge:true,winnerUid:null,message:"카드 1장을 골라 숫자를 선언하세요."};
+  const g={type:"doubt",order:ps.map(p=>p.uid),hands,pile:[],turnUid:ps[0].uid,lastPlay:null,pendingChallenge:true,winnerUid:null,message:"카드 1장을 골라 숫자를 선언하세요.",rev:0,lastActor:user.uid};
   await update(ref(db,"rooms/"+roomCode),{status:"playing",mode:"doubt",game:g})
 }
 function renderDoubt(){
@@ -373,12 +448,12 @@ function showClaimPicker(idx){
   document.querySelectorAll(".rankbtn").forEach(b=>b.onclick=()=>submitDoubt(idx,b.dataset.r))
 }
 async function submitDoubt(idx,claim){
-  await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+  await secureGameTx(g=>{
     if(!g||g.turnUid!==user.uid||g.lastPlay)return g;const h=(g.hands[user.uid]||[]).slice(),c=h[idx];if(!c)return g;h.splice(idx,1);g.hands[user.uid]=h;g.pile.push(c);g.lastPlay={uid:user.uid,claim,actual:c.rank};g.turnUid=pokerNext(g,user.uid);g.message=`${claim} 선언. 믿기 또는 다우트!`;return g
   })
 }
 async function resolveDoubt(challenge){
-  await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+  await secureGameTx(g=>{
     if(!g||!g.lastPlay||g.turnUid!==user.uid)return g;const lp=g.lastPlay;
     if(challenge){
       const liar=lp.actual!==lp.claim,loser=liar?lp.uid:user.uid;g.hands[loser]=(g.hands[loser]||[]).concat(g.pile);g.pile=[];g.lastPlay=null;g.turnUid=loser;g.message=liar?"거짓말 적발!":"진실이었다! 다우트 실패"
