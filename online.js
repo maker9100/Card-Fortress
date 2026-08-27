@@ -68,11 +68,66 @@ let chatOpen = false;
 let chatUnread = 0;
 let lastChatSeenKey = "";
 let restoringRoom = false;
-const CHAT_BAD_WORDS = ["씨발","시발","ㅆㅂ","ㅅㅂ","씹","좆","ㅈㄴ","존나","개새끼","새끼","병신","ㅂㅅ","미친놈","미친년","꺼져","닥쳐","엿먹어","지랄","ㅈㄹ","창녀","걸레","fuck","fucking","shit","bitch","asshole","dick","cunt","motherfucker"];
-function censorChat(text){
+// AI 채팅 검열 서버 주소. Render 배포 후 자신의 주소로 변경하세요.
+// 예: https://card-fortress-moderation.onrender.com/moderate
+const CHAT_MODERATION_ENDPOINT = "";
+
+// AI 서버가 꺼져 있을 때만 쓰는 최소 fallback.
+// 정상 단어 오탐을 줄이기 위해 강한 표현만 넣고 한 글자/일상 단어는 넣지 않는다.
+const CHAT_FALLBACK_BAD_WORDS = [
+  "씨발","ㅆㅂ","ㅅㅂ","좆","존나","개새끼","병신","ㅂㅅ","지랄","ㅈㄹ",
+  "fuck","fucking","shit","bitch","asshole","motherfucker"
+];
+
+function fallbackCensorChat(text){
   let out=String(text||"").trim().slice(0,120);
-  for(const word of CHAT_BAD_WORDS){const escaped=word.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");out=out.replace(new RegExp(escaped,"gi"),m=>"*".repeat(Math.max(2,[...m].length)));}
-  return out.replace(/ㅆ\s*ㅂ/gi,"**").replace(/ㅅ\s*ㅂ/gi,"**").replace(/ㅂ\s*ㅅ/gi,"**").replace(/ㅈ\s*ㄴ/gi,"**").replace(/ㅈ\s*ㄹ/gi,"**");
+  for(const word of CHAT_FALLBACK_BAD_WORDS){
+    const escaped=word.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+    out=out.replace(new RegExp(escaped,"gi"),m=>"*".repeat(Math.max(2,[...m].length)));
+  }
+  return out
+    .replace(/ㅆ\s*ㅂ/gi,"**")
+    .replace(/ㅅ\s*ㅂ/gi,"**")
+    .replace(/ㅂ\s*ㅅ/gi,"**")
+    .replace(/ㅈ\s*ㄴ/gi,"**")
+    .replace(/ㅈ\s*ㄹ/gi,"**");
+}
+
+async function moderateChatText(raw){
+  const text=String(raw||"").trim().slice(0,120);
+  if(!text) return {text:"",censored:false,source:"empty"};
+
+  // 서버를 아직 배포하지 않았으면 최소 로컬 필터만 사용.
+  if(!CHAT_MODERATION_ENDPOINT){
+    const filtered=fallbackCensorChat(text);
+    return {text:filtered,censored:filtered!==text,source:"local-fallback"};
+  }
+
+  try{
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),5000);
+    const response=await fetch(CHAT_MODERATION_ENDPOINT,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text}),
+      signal:controller.signal
+    });
+    clearTimeout(timer);
+
+    if(!response.ok) throw new Error(`moderation HTTP ${response.status}`);
+    const result=await response.json();
+    if(typeof result.text!=="string") throw new Error("invalid moderation response");
+
+    return {
+      text:result.text.slice(0,120),
+      censored:!!result.censored,
+      source:result.source||"ai"
+    };
+  }catch(error){
+    console.warn("AI moderation unavailable; local fallback used",error);
+    const filtered=fallbackCensorChat(text);
+    return {text:filtered,censored:filtered!==text,source:"local-fallback"};
+  }
 }
 function formatChatTime(ts){return new Date(Number(ts)||Date.now()).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"});}
 function roomChatEntries(){const chat=roomData?.chat||{};return Object.entries(chat).map(([key,value])=>({key,...value})).filter(m=>m&&typeof m.text==="string").sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)).slice(-50);}
@@ -86,7 +141,45 @@ function renderChat(){
 }
 function openChat(){if(!roomCode)return;chatOpen=true;chatUnread=0;const m=roomChatEntries();if(m.length)lastChatSeenKey=m[m.length-1].key;renderChat();setTimeout(()=>$("chatInput")?.focus(),50);}
 function closeChat(){chatOpen=false;renderChat();}
-async function sendChat(){const input=$("chatInput");if(!input||!roomCode||!user||!roomData?.players?.[user.uid])return;const raw=input.value.trim();if(!raw)return;const text=censorChat(raw);input.value="";const now=Date.now();const key=`${now}_${user.uid.slice(0,8)}_${Math.random().toString(36).slice(2,7)}`;try{await set(ref(db,`rooms/${roomCode}/chat/${key}`),{senderUid:user.uid,senderName:roomData.players[user.uid].name,text,createdAt:now});}catch(error){console.error(error);input.value=raw;const msg=document.querySelector(".screen.active .msg");if(msg)msg.textContent="채팅 전송 실패: "+(error.code||error.message||"unknown");}}
+async function sendChat(){
+  const input=$("chatInput");
+  if(!input||!roomCode||!user||!roomData?.players?.[user.uid]) return;
+
+  const raw=input.value.trim();
+  if(!raw) return;
+
+  const sendBtn=$("chatSendBtn");
+  input.disabled=true;
+  if(sendBtn){sendBtn.disabled=true;sendBtn.textContent="검사 중…";}
+
+  try{
+    const moderated=await moderateChatText(raw);
+    if(!moderated.text) return;
+
+    const now=Date.now();
+    const key=`${now}_${user.uid.slice(0,8)}_${Math.random().toString(36).slice(2,7)}`;
+
+    await set(ref(db,`rooms/${roomCode}/chat/${key}`),{
+      senderUid:user.uid,
+      senderName:roomData.players[user.uid].name,
+      text:moderated.text,
+      censored:moderated.censored,
+      moderationSource:moderated.source,
+      createdAt:now
+    });
+
+    input.value="";
+  }catch(error){
+    console.error(error);
+    const msg=document.querySelector(".screen.active .msg");
+    if(msg) msg.textContent="채팅 전송 실패: "+(error.code||error.message||"unknown");
+  }finally{
+    input.disabled=false;
+    if(sendBtn){sendBtn.disabled=false;sendBtn.textContent="전송";}
+    input.focus();
+  }
+}
+
 async function setPresence(onlineState){if(!roomCode||!user)return;try{await update(ref(db,`rooms/${roomCode}/players/${user.uid}`),{online:!!onlineState,lastSeen:Date.now()});}catch(error){console.warn("presence update failed",error);}}
 async function restoreRoomIfPossible(){if(restoringRoom||roomCode||!db||!user)return;const saved=localStorage.getItem(ACTIVE_ROOM_KEY);if(!saved||!/^[A-Z0-9]{6}$/.test(saved))return;restoringRoom=true;try{const snap=await get(ref(db,`rooms/${saved}`));if(snap.exists()&&snap.val()?.players?.[user.uid])enterRoom(saved);else localStorage.removeItem(ACTIVE_ROOM_KEY);}catch(error){console.warn("room restore failed",error);}finally{restoringRoom=false;}}
 
