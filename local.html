@@ -3060,14 +3060,14 @@ $('bjDealBtn').onclick=function(){
 };
 
 function bjRender(revealDealer){
-  $('bjPlayerHand').innerHTML=bjPlayerHand.map(cardHTML).join('');
+  $('bjPlayerHand').innerHTML=bjPlayerHand.map(c=>cardHTML(c,false,-1)).join('');
   $('bjPlayerScore').textContent=bjScore(bjPlayerHand);
 
   if(revealDealer){
-    $('bjDealerHand').innerHTML=bjDealerHand.map(cardHTML).join('');
+    $('bjDealerHand').innerHTML=bjDealerHand.map(c=>cardHTML(c,false,-1)).join('');
     $('bjDealerScore').textContent='· '+bjScore(bjDealerHand)+'점';
   }else{
-    $('bjDealerHand').innerHTML=cardHTML(bjDealerHand[0])+'<div class="jd-back">♠</div>';
+    $('bjDealerHand').innerHTML=(bjDealerHand[0]?cardHTML(bjDealerHand[0],false,-1):'')+'<div class="jd-back">♠</div>';
     $('bjDealerScore').textContent='· ?점';
   }
 
@@ -3092,9 +3092,20 @@ $('bjStandBtn').onclick=function(){
 };
 
 function bjFinishDealer(playerNatural){
-  while(bjScore(bjDealerHand)<17){
-    bjDealerHand.push(bjDraw());
+  if(bjOver) return;
+
+  // 딜러는 17점 이상이 될 때까지 반드시 카드를 추가한다.
+  // 매번 패 배열에 실제 카드를 push한 뒤 최종 렌더에서 전부 표시한다.
+  let guard=0;
+  while(bjScore(bjDealerHand)<17 && guard<20){
+    const next=bjDraw();
+    if(!next) break;
+    bjDealerHand.push(next);
+    guard++;
   }
+
+  // 딜러 추가 카드가 UI에 누락되지 않도록 판정 전에 한 번 렌더.
+  bjRender(true);
 
   const ps=bjScore(bjPlayerHand);
   const ds=bjScore(bjDealerHand);

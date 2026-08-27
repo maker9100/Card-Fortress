@@ -765,6 +765,10 @@ function cardHtml(
     return "";
   }
 
+  const playableStyle = playable
+    ? 'outline:3px solid #e7c45f;outline-offset:2px;cursor:pointer;box-shadow:0 0 0 3px rgba(231,196,95,.18),0 6px 15px rgba(0,0,0,.32);'
+    : '';
+
   if (card.joker) {
 
     return `
@@ -774,7 +778,10 @@ function cardHtml(
             ? "playable"
             : ""
         }"
+        style="${playableStyle}"
         data-idx="${index}"
+        role="${playable ? "button" : "img"}"
+        tabindex="${playable ? "0" : "-1"}"
       >
         <div class="rank">★</div>
         <div class="big">🃏</div>
@@ -799,7 +806,10 @@ function cardHtml(
           ? "playable"
           : ""
       }"
+      style="${playableStyle}"
       data-idx="${index}"
+      role="${playable ? "button" : "img"}"
+      tabindex="${playable ? "0" : "-1"}"
     >
       <div class="rank">
         ${card.rank}${card.suit}
@@ -2448,11 +2458,16 @@ async function playOneCard(
         }
 
         if (
-          card.rank === "7"
+          card.rank === "7" ||
+          card.joker
         ) {
 
           game.waitingSuitUid =
             user.uid;
+
+          // 7뿐 아니라 흑조커/컬러조커도 다음 무늬를 지정한다.
+          game.waitingSuitReason =
+            card.joker ? "joker" : "seven";
 
           needSuit =
             true;
@@ -2560,6 +2575,9 @@ async function chooseSuit(
           suit;
 
         game.waitingSuitUid =
+          null;
+
+        game.waitingSuitReason =
           null;
 
         game.extraChain =
@@ -3348,13 +3366,27 @@ function renderPoker() {
           .forEach(
             element => {
 
-              element.onclick =
-                () =>
-                  pokerDiscard(
-                    Number(
-                      element.dataset.idx
-                    )
-                  );
+              const choose = () => {
+                const idx = Number(element.dataset.idx);
+                if (Number.isInteger(idx)) {
+                  if ($("pokerMessage")) {
+                    $("pokerMessage").textContent = "카드 선택 처리 중…";
+                  }
+                  pokerDiscard(idx);
+                }
+              };
+
+              element.onclick = choose;
+              element.ontouchend = event => {
+                event.preventDefault();
+                choose();
+              };
+              element.onkeydown = event => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  choose();
+                }
+              };
             }
           );
       }
@@ -3507,8 +3539,9 @@ async function pokerDiscard(
   index
 ) {
 
-  await secureGameTx(
-    game => {
+  try {
+    const tx = await secureGameTx(
+      game => {
 
       if (
         !game ||
@@ -3583,8 +3616,18 @@ async function pokerDiscard(
       }
 
       return game;
+      }
+    );
+
+    if (!tx?.committed && $("pokerMessage")) {
+      $("pokerMessage").textContent = "카드 선택이 반영되지 않았습니다. 다시 눌러주세요.";
     }
-  );
+  } catch (error) {
+    console.error(error);
+    if ($("pokerMessage")) {
+      $("pokerMessage").textContent = "카드 선택 실패: " + (error.code || error.message || "unknown");
+    }
+  }
 }
 
 async function pokerBet(
@@ -4751,9 +4794,20 @@ function renderDoubt() {
     $("doubtCenter")
   ) {
 
-    $("doubtCenter")
-      .innerHTML =
-        game.lastPlay
+    $("doubtCenter").innerHTML =
+      game.revealedCard
+        ? `
+          <div style="margin-bottom:10px"><b>🕵️ 다우트 공개</b></div>
+          <div style="display:flex;justify-content:center;margin:8px 0">
+            ${cardHtml(game.revealedCard)}
+          </div>
+          <div>
+            실제 카드: <b>${game.revealedCard.rank}${game.revealedCard.suit || ""}</b>
+            · 선언: <b>${escapeHtml(game.revealedClaim || "")}</b>
+          </div>
+          <div style="margin-top:5px">${escapeHtml(game.revealResult || "")}</div>
+        `
+        : game.lastPlay
           ? `
             <b>
               ${
@@ -4765,9 +4819,7 @@ function renderDoubt() {
                 )
               }
             </b>
-
             · "${game.lastPlay.claim}" 선언
-
             · 중앙 ${game.pile.length}장
           `
           : `중앙 ${game.pile.length}장`;
@@ -4970,6 +5022,10 @@ async function submitDoubt(
         card
       );
 
+      game.revealedCard = null;
+      game.revealedClaim = null;
+      game.revealResult = null;
+
       game.lastPlay = {
         uid:
           user.uid,
@@ -5018,6 +5074,17 @@ async function resolveDoubt(
         const liar =
           last.actual !==
           last.claim;
+
+        const justPlayed =
+          game.pile?.length
+            ? game.pile[game.pile.length - 1]
+            : null;
+
+        game.revealedCard = justPlayed;
+        game.revealedClaim = last.claim;
+        game.revealResult = liar
+          ? "거짓말 적발! 카드를 낸 플레이어가 중앙 패를 가져갑니다."
+          : "진실이었다! 다우트를 외친 플레이어가 중앙 패를 가져갑니다.";
 
         const loser =
           liar
