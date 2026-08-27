@@ -92,7 +92,7 @@
   </section>
 
   <section id="suitScreen" class="screen panel center">
-    <h2>7 효과 · 무늬 선택</h2>
+    <h2>무늬 선택</h2>
     <div class="suitgrid">
       <button class="suitBtn" data-suit="♠">♠</button><button class="suitBtn red" data-suit="♥">♥</button>
       <button class="suitBtn red" data-suit="♦">♦</button><button class="suitBtn" data-suit="♣">♣</button>
@@ -164,6 +164,25 @@
     </div>
   </section>
 </main>
+
+  <!-- ROOM CHAT -->
+  <button id="chatFab" class="chat-fab" type="button" style="display:none" aria-label="채팅 열기">
+    💬 <span id="chatUnread" class="chat-unread" style="display:none">0</span>
+  </button>
+
+  <aside id="chatPanel" class="chat-panel" aria-hidden="true">
+    <div class="chat-head">
+      <div><strong>💬 방 채팅</strong><div id="chatRoomLabel" class="muted">방 ------</div></div>
+      <button id="chatCloseBtn" class="tiny" type="button">닫기</button>
+    </div>
+    <div id="chatMessages" class="chat-messages"><div class="chat-empty">아직 메시지가 없습니다.</div></div>
+    <div class="chat-compose">
+      <input id="chatInput" maxlength="120" autocomplete="off" placeholder="메시지 입력 (욕설 자동 검열)" aria-label="채팅 메시지">
+      <button id="chatSendBtn" class="primary" type="button">전송</button>
+    </div>
+    <div class="chat-note">욕설·비속어는 자동으로 * 처리됩니다.</div>
+  </aside>
+
 <script type="module" src="./online.js"></script>
 </body>
 </html>

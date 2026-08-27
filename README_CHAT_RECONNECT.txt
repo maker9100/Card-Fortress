@@ -1,0 +1,1 @@
+채팅 + 욕설검열 + 모바일 재접속 패치. firebase-rtdb-rules.json을 Firebase Realtime Database > 규칙에 게시해야 합니다.

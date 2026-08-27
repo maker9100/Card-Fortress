@@ -2,42 +2,27 @@
   "rules": {
     "rooms": {
       "$roomCode": {
-        ".read": "auth != null && data.child('players').child(auth.uid).exists()",
-
-        "hostUid": {
-          ".write": "auth != null && ((!data.exists() && newData.val() === auth.uid) || (root.child('rooms').child($roomCode).child('hostUid').val() === auth.uid))",
-          ".validate": "newData.isString()"
-        },
-
-        "createdAt": {
-          ".write": "auth != null && !data.exists() && newData.isNumber()"
-        },
-
-        "mode": {
-          ".write": "auth != null && root.child('rooms').child($roomCode).child('hostUid').val() === auth.uid",
-          ".validate": "newData.val() === 'onecard' || newData.val() === 'poker' || newData.val() === 'joker' || newData.val() === 'doubt'"
-        },
-
-        "status": {
-          ".write": "auth != null && (root.child('rooms').child($roomCode).child('hostUid').val() === auth.uid || (newData.val() === 'finished' && root.child('rooms').child($roomCode).child('players').child(auth.uid).exists()))",
-          ".validate": "newData.val() === 'lobby' || newData.val() === 'playing' || newData.val() === 'finished'"
-        },
-
-        "maxPlayers": {
-          ".write": "auth != null && root.child('rooms').child($roomCode).child('hostUid').val() === auth.uid && root.child('rooms').child($roomCode).child('status').val() === 'lobby'",
-          ".validate": "newData.isNumber() && newData.val() >= 2 && newData.val() <= 6"
-        },
-
+        ".read": "auth != null && (!data.exists() || data.child('status').val() === 'lobby' || data.child('players').child(auth.uid).exists())",
+        ".write": "auth != null && !data.exists() && newData.exists() && newData.child('hostUid').val() === auth.uid",
+        "hostUid": {".write": "auth != null && data.parent().child('hostUid').val() === auth.uid", ".validate": "newData.isString()"},
+        "status": {".write": "auth != null && (data.parent().child('hostUid').val() === auth.uid || (newData.val() === 'finished' && data.parent().child('players').child(auth.uid).exists()))", ".validate": "newData.val() === 'lobby' || newData.val() === 'playing' || newData.val() === 'finished'"},
+        "mode": {".write": "auth != null && data.parent().child('hostUid').val() === auth.uid", ".validate": "newData.val() === 'onecard' || newData.val() === 'poker' || newData.val() === 'joker' || newData.val() === 'doubt'"},
+        "maxPlayers": {".write": "auth != null && data.parent().child('hostUid').val() === auth.uid && data.parent().child('status').val() === 'lobby'", ".validate": "newData.isNumber() && newData.val() >= 2 && newData.val() <= 6"},
+        "createdAt": {".validate": "newData.isNumber()"},
         "players": {
           "$uid": {
-            ".write": "auth != null && auth.uid === $uid && (newData.val() === null || root.child('rooms').child($roomCode).child('status').val() === 'lobby')",
-            ".validate": "newData.val() === null || (newData.hasChildren(['name','ready','seat','joinedAt']) && newData.child('name').isString() && newData.child('name').val().length > 0 && newData.child('name').val().length <= 12 && newData.child('ready').isBoolean() && newData.child('seat').isNumber() && newData.child('seat').val() >= 0 && newData.child('seat').val() <= 5 && newData.child('joinedAt').isNumber())"
-          },
-          ".validate": "newData.numChildren() <= 6"
+            ".write": "auth != null && auth.uid === $uid && (newData.val() === null || !data.exists() || data.parent().parent().child('status').val() === 'lobby' || (newData.child('name').val() === data.child('name').val() && newData.child('seat').val() === data.child('seat').val() && newData.child('joinedAt').val() === data.child('joinedAt').val() && newData.child('ready').val() === data.child('ready').val()))",
+            ".validate": "newData.val() === null || (newData.hasChildren(['name','ready','seat','joinedAt']) && newData.child('name').isString() && newData.child('name').val().length > 0 && newData.child('name').val().length <= 12 && newData.child('ready').isBoolean() && newData.child('seat').isNumber() && newData.child('seat').val() >= 0 && newData.child('seat').val() <= 5 && newData.child('joinedAt').isNumber() && (!newData.child('online').exists() || newData.child('online').isBoolean()) && (!newData.child('lastSeen').exists() || newData.child('lastSeen').isNumber()))"
+          }
         },
-
+        "chat": {
+          "$messageId": {
+            ".write": "auth != null && data.val() === null && data.parent().parent().child('players').child(auth.uid).exists() && newData.child('senderUid').val() === auth.uid && newData.child('senderName').val() === data.parent().parent().child('players').child(auth.uid).child('name').val()",
+            ".validate": "newData.hasChildren(['senderUid','senderName','text','createdAt']) && newData.child('senderUid').isString() && newData.child('senderName').isString() && newData.child('senderName').val().length <= 12 && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 120 && newData.child('createdAt').isNumber()"
+          }
+        },
         "game": {
-          ".write": "auth != null && root.child('rooms').child($roomCode).child('players').child(auth.uid).exists() && ((data.val() === null && root.child('rooms').child($roomCode).child('hostUid').val() === auth.uid) || (newData.val() === null && root.child('rooms').child($roomCode).child('hostUid').val() === auth.uid) || (data.exists() && data.child('turnUid').val() === auth.uid && newData.child('lastActor').val() === auth.uid && newData.child('rev').val() === data.child('rev').val() + 1))",
+          ".write": "auth != null && data.parent().child('players').child(auth.uid).exists() && ((!data.exists() && data.parent().child('hostUid').val() === auth.uid) || (newData.val() === null && data.parent().child('hostUid').val() === auth.uid) || (data.exists() && data.child('turnUid').val() === auth.uid && newData.child('lastActor').val() === auth.uid && newData.child('rev').val() === data.child('rev').val() + 1))",
           ".validate": "newData.val() === null || (newData.child('rev').isNumber() && newData.child('rev').val() >= 0 && newData.child('lastActor').isString())"
         }
       }

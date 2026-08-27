@@ -63,6 +63,34 @@ let roomUnsub = null;
 let pendingSeven = false;
 let selectedMode = "onecard";
 
+const ACTIVE_ROOM_KEY = "cardFortressActiveRoom";
+let chatOpen = false;
+let chatUnread = 0;
+let lastChatSeenKey = "";
+let restoringRoom = false;
+const CHAT_BAD_WORDS = ["씨발","시발","ㅆㅂ","ㅅㅂ","씹","좆","ㅈㄴ","존나","개새끼","새끼","병신","ㅂㅅ","미친놈","미친년","꺼져","닥쳐","엿먹어","지랄","ㅈㄹ","창녀","걸레","fuck","fucking","shit","bitch","asshole","dick","cunt","motherfucker"];
+function censorChat(text){
+  let out=String(text||"").trim().slice(0,120);
+  for(const word of CHAT_BAD_WORDS){const escaped=word.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");out=out.replace(new RegExp(escaped,"gi"),m=>"*".repeat(Math.max(2,[...m].length)));}
+  return out.replace(/ㅆ\s*ㅂ/gi,"**").replace(/ㅅ\s*ㅂ/gi,"**").replace(/ㅂ\s*ㅅ/gi,"**").replace(/ㅈ\s*ㄴ/gi,"**").replace(/ㅈ\s*ㄹ/gi,"**");
+}
+function formatChatTime(ts){return new Date(Number(ts)||Date.now()).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"});}
+function roomChatEntries(){const chat=roomData?.chat||{};return Object.entries(chat).map(([key,value])=>({key,...value})).filter(m=>m&&typeof m.text==="string").sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)).slice(-50);}
+function renderChat(){
+  const fab=$("chatFab"),panel=$("chatPanel"),unread=$("chatUnread"),box=$("chatMessages"); if(!fab||!panel||!unread||!box)return;
+  const inRoom=!!roomCode&&!!roomData?.players?.[user?.uid];fab.style.display=inRoom?"block":"none";panel.classList.toggle("open",inRoom&&chatOpen);panel.setAttribute("aria-hidden",(!inRoom||!chatOpen)?"true":"false");
+  if($("chatRoomLabel"))$("chatRoomLabel").textContent=roomCode?`방 ${roomCode}`:"방 ------";
+  const messages=roomChatEntries(); box.innerHTML=messages.length?messages.map(m=>`<div class="chat-msg ${m.senderUid===user?.uid?"mine":""}"><div class="chat-meta"><b>${escapeHtml(m.senderName||"플레이어")}</b><span>${formatChatTime(m.createdAt)}</span></div><div class="chat-text">${escapeHtml(m.text)}</div></div>`).join(""):'<div class="chat-empty">아직 메시지가 없습니다.</div>';
+  const newest=messages[messages.length-1]; if(newest&&newest.key!==lastChatSeenKey){if(chatOpen){lastChatSeenKey=newest.key;chatUnread=0;}else if(newest.senderUid!==user?.uid){chatUnread=Math.min(99,chatUnread+1);lastChatSeenKey=newest.key;}}
+  unread.textContent=String(chatUnread);unread.style.display=chatUnread>0?"inline-grid":"none"; if(chatOpen)requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
+}
+function openChat(){if(!roomCode)return;chatOpen=true;chatUnread=0;const m=roomChatEntries();if(m.length)lastChatSeenKey=m[m.length-1].key;renderChat();setTimeout(()=>$("chatInput")?.focus(),50);}
+function closeChat(){chatOpen=false;renderChat();}
+async function sendChat(){const input=$("chatInput");if(!input||!roomCode||!user||!roomData?.players?.[user.uid])return;const raw=input.value.trim();if(!raw)return;const text=censorChat(raw);input.value="";const now=Date.now();const key=`${now}_${user.uid.slice(0,8)}_${Math.random().toString(36).slice(2,7)}`;try{await set(ref(db,`rooms/${roomCode}/chat/${key}`),{senderUid:user.uid,senderName:roomData.players[user.uid].name,text,createdAt:now});}catch(error){console.error(error);input.value=raw;const msg=document.querySelector(".screen.active .msg");if(msg)msg.textContent="채팅 전송 실패: "+(error.code||error.message||"unknown");}}
+async function setPresence(onlineState){if(!roomCode||!user)return;try{await update(ref(db,`rooms/${roomCode}/players/${user.uid}`),{online:!!onlineState,lastSeen:Date.now()});}catch(error){console.warn("presence update failed",error);}}
+async function restoreRoomIfPossible(){if(restoringRoom||roomCode||!db||!user)return;const saved=localStorage.getItem(ACTIVE_ROOM_KEY);if(!saved||!/^[A-Z0-9]{6}$/.test(saved))return;restoringRoom=true;try{const snap=await get(ref(db,`rooms/${saved}`));if(snap.exists()&&snap.val()?.players?.[user.uid])enterRoom(saved);else localStorage.removeItem(ACTIVE_ROOM_KEY);}catch(error){console.warn("room restore failed",error);}finally{restoringRoom=false;}}
+
+
 /* =========================================================
    공통 함수
 ========================================================= */
@@ -645,6 +673,7 @@ async function boot() {
         renderAccount(
           currentUser
         );
+        restoreRoomIfPossible();
       }
     );
 
@@ -1171,19 +1200,17 @@ async function enterRoom(code) {
       `rooms/${code}/players/${user.uid}`
     );
 
+  // 모바일 앱/창 전환은 퇴장이 아니다. 데이터는 유지하고 접속 상태만 변경한다.
   try {
-
-    onDisconnect(
-      playerRef
-    ).remove();
-
+    await update(playerRef,{online:true,lastSeen:Date.now()});
+    onDisconnect(ref(db,`rooms/${code}/players/${user.uid}/online`)).set(false);
+    onDisconnect(ref(db,`rooms/${code}/players/${user.uid}/lastSeen`)).set(Date.now());
   } catch (error) {
-
-    console.warn(
-      "onDisconnect 실패",
-      error
-    );
+    console.warn("presence setup failed",error);
   }
+
+  localStorage.setItem(ACTIVE_ROOM_KEY,code);
+  if($("chatRoomLabel")) $("chatRoomLabel").textContent=`방 ${code}`;
 
   roomUnsub =
     onValue(
@@ -1235,12 +1262,14 @@ async function enterRoom(code) {
           incoming;
 
         renderRoom();
+        renderChat();
       }
     );
 
   show(
     "lobbyScreen"
   );
+  renderChat();
 }
 
 function sortedPlayers() {
@@ -1467,6 +1496,7 @@ function renderRoom() {
                         ? "👑"
                         : ""
                     }
+                    <span class="${player.online===false?"player-offline":"player-online"}">${player.online===false?"● 오프라인":"● 온라인"}</span>
                   </div>
 
                   <strong>
@@ -5417,6 +5447,10 @@ async function leaveRoom() {
     pendingSeven =
       false;
 
+    chatOpen=false; chatUnread=0; lastChatSeenKey="";
+    localStorage.removeItem(ACTIVE_ROOM_KEY);
+    renderChat();
+
     show(
       "homeScreen"
     );
@@ -5645,6 +5679,15 @@ if (roomCodeInput) {
       }
     );
 }
+
+/* =========================================================
+   채팅 / 모바일 재연결
+========================================================= */
+bindClick("chatFab",openChat);bindClick("chatCloseBtn",closeChat);bindClick("chatSendBtn",sendChat);
+const chatInput=$("chatInput");if(chatInput){chatInput.addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();sendChat();}});}
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"){setPresence(true);restoreRoomIfPossible();}});
+window.addEventListener("pageshow",()=>{setPresence(true);restoreRoomIfPossible();});
+window.addEventListener("online",()=>{setPresence(true);restoreRoomIfPossible();});
 
 /* =========================================================
    실행
