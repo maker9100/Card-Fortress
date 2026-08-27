@@ -905,6 +905,22 @@
       </div>
     </section>
 
+
+    <section id="localDoubtPass" class="screen center">
+      <div class="badge">🎭 다우트</div>
+      <h2 id="ldPassTitle">플레이어에게 넘겨주세요</h2>
+      <p class="muted">자기 패만 확인하세요.</p>
+      <button id="ldPassBtn">내 차례</button>
+    </section>
+    <section id="localDoubtScreen" class="screen center">
+      <div class="badge">🎭 다우트</div>
+      <h2 id="ldTurnTitle">플레이어 차례</h2>
+      <div id="ldInfo" class="info"></div>
+      <div id="ldCenter" class="rulebox"></div>
+      <div id="ldMessage" class="muted"></div>
+      <div id="ldHand" class="cards oc-hand"></div>
+      <div id="ldControls"></div>
+    </section>
     <section id="setup" class="screen active center">
       <h2>게임 모드</h2>
       <div class="mode-row">
@@ -912,6 +928,7 @@
         <button class="mode-btn" data-mode="onecard">⚡ 원카드</button>
         <button class="mode-btn" data-mode="joker">🃏 조커뽑기</button>
         <button class="mode-btn" data-mode="blackjack">♦️ 블랙잭</button>
+        <button class="mode-btn" data-mode="doubt">🎭 다우트</button>
         <button class="mode-btn random-mode" data-mode="random">🎲 랜덤</button>
       </div>
       <div id="modeDesc" class="rulebox">포커: 2장 중 1장을 남기고 4장을 추가로 받아 승부합니다.</div>
@@ -2137,7 +2154,8 @@ $('startBtn').onclick=()=>{
 
   beginStatMatch(chosen);
 
-  if(chosen==='onecard') startOneCard();
+  if(chosen==='doubt') startLocalDoubt();
+  else if(chosen==='onecard') startOneCard();
   else if(chosen==='joker') startJokerDraw();
   else if(chosen==='blackjack') startBlackjack();
   else startGame();
@@ -3342,6 +3360,61 @@ function showJokerResult(){
 $('jdAgainBtn').onclick=()=>{ beginStatMatch('joker'); startJokerDraw(); };
 $('jdHomeBtn').onclick=returnToSetup;
 
+
+let ldPlayers=[],ldCurrent=0,ldPile=[],ldLast=null,ldSelected=null;
+function startLocalDoubt(){
+  const d=[];
+  for(const s of SUITS)for(const r of RANKS)d.push({rank:r.r,value:r.v,suit:s.s,suitName:s.name,red:s.red,joker:false});
+  shuffle(d);
+  const n=playerCount===1?2:playerCount;
+  ldPlayers=Array.from({length:n},(_,i)=>({name:playerCount===1?(i===0?'플레이어':'CPU'):`플레이어 ${i+1}`,isCPU:playerCount===1&&i===1,hand:[]}));
+  let k=0;while(d.length){ldPlayers[k%n].hand.push(d.pop());k++}
+  ldCurrent=0;ldPile=[];ldLast=null;ldSelected=null;ldBegin()
+}
+function ldBegin(){
+  const p=ldPlayers[ldCurrent];
+  if(p.isCPU){setTimeout(ldCpu,350);return}
+  if(playerCount===1)ldRender();else{$('ldPassTitle').textContent=`${p.name}에게 넘겨주세요`;$('ldPassBtn').onclick=ldRender;show('localDoubtPass')}
+}
+function ldRender(){
+  const p=ldPlayers[ldCurrent];
+  $('ldTurnTitle').textContent=`${p.name} 차례`;
+  $('ldInfo').textContent=`내 카드 ${p.hand.length}장 · 중앙 ${ldPile.length}장`;
+  $('ldCenter').textContent=ldLast?`${ldLast.player} : "${ldLast.claim}" 선언`:'카드를 내고 숫자/문자를 선언하세요.';
+  $('ldMessage').textContent='';
+  $('ldHand').innerHTML=p.hand.map((c,i)=>cardHTML(c,true,i)).join('');
+  $('ldControls').innerHTML='';
+  if(ldLast&&ldLast.player!==p.name){
+    $('ldControls').innerHTML='<div class="controls"><button id="ldBelieve">믿기</button><button id="ldDoubt" class="danger">다우트!</button></div>';
+    $('ldBelieve').onclick=()=>ldResolve(false);$('ldDoubt').onclick=()=>ldResolve(true);
+  }else{
+    document.querySelectorAll('#ldHand .card').forEach(el=>el.onclick=()=>ldPick(+el.dataset.idx))
+  }
+  show('localDoubtScreen')
+}
+function ldPick(idx){
+  ldSelected=idx;
+  $('ldControls').innerHTML='<div class="rankgrid">'+RANKS.map(r=>`<button class="rankbtn" data-r="${r.r}">${r.r}</button>`).join('')+'</div>';
+  document.querySelectorAll('#ldControls .rankbtn').forEach(b=>b.onclick=()=>ldSubmit(b.dataset.r))
+}
+function ldSubmit(claim){
+  const p=ldPlayers[ldCurrent],c=p.hand.splice(ldSelected,1)[0];ldPile.push(c);ldLast={player:p.name,claim,actual:c.rank,playerIndex:ldCurrent};ldCurrent=(ldCurrent+1)%ldPlayers.length;ldBegin()
+}
+function ldResolve(challenge){
+  const caller=ldPlayers[ldCurrent],owner=ldPlayers[ldLast.playerIndex];
+  if(challenge){
+    const liar=ldLast.actual!==ldLast.claim,loser=liar?owner:caller;loser.hand.push(...ldPile);ldPile=[];ldLast=null;ldCurrent=ldPlayers.indexOf(loser)
+  }else{
+    if(owner.hand.length===0){alert(owner.name+' 승리!');startLocalDoubt();return}
+    ldLast=null;
+  }
+  ldBegin()
+}
+function ldCpu(){
+  const p=ldPlayers[ldCurrent];
+  if(ldLast&&ldLast.player!==p.name){ldResolve(Math.random()<0.35);return}
+  const idx=Math.floor(Math.random()*p.hand.length),truth=Math.random()<0.65,claim=truth?p.hand[idx].rank:RANKS[Math.floor(Math.random()*RANKS.length)].r;ldSelected=idx;ldSubmit(claim)
+}
 function makeOneCardDeck(){
   const d=[];
   for(const suit of SUITS) for(const rank of RANKS)

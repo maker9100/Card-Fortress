@@ -17,7 +17,7 @@ function setError(s){$("setupError").textContent=s||""}
 function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[ch]))}
 function configLooksReady(){return firebaseConfig.apiKey&&!firebaseConfig.apiKey.includes("YOUR_")&&firebaseConfig.databaseURL}
-function modeLabel(m){return m==="onecard"?"⚡ 원카드":m==="poker"?"♠ 포커":"🎭 다우트"}
+function modeLabel(m){return m==="onecard"?"⚡ 원카드":m==="poker"?"♠ 포커":m==="joker"?"🃏 조커뽑기":"🎭 다우트"}
 
 async function boot(){
   if(!configLooksReady()){setError("Firebase 설정 필요");return}
@@ -108,6 +108,7 @@ function renderRoom(){
   }else if(roomData.status==="playing"){
     if(roomData.mode==="onecard")renderOneCard();
     else if(roomData.mode==="poker")renderPoker();
+    else if(roomData.mode==="joker")renderJoker();
     else renderDoubt()
   }else if(roomData.status==="finished")renderResult()
 }
@@ -118,6 +119,7 @@ async function startOnline(){
   const ps=sortedPlayers();if(ps.length<2||!ps.every(p=>p.ready))return;
   if(roomData.mode==="onecard")await startOneCard(ps);
   else if(roomData.mode==="poker")await startPoker(ps);
+  else if(roomData.mode==="joker")await startJoker(ps);
   else await startDoubt(ps)
 }
 
@@ -257,6 +259,96 @@ function pokerAward(g,wins){
   g.order.forEach(id=>{g.initial[id]=[g.deck.pop(),g.deck.pop()];g.hands[id]=[];const pay=Math.min(2,g.tokens[id]);g.tokens[id]-=pay;g.pot+=pay});g.turnUid=g.order[0]
 }
 
+
+/* ---------- JOKER DRAW ---------- */
+function makeJokerDeck(){
+  const d=make52();
+  d.push({rank:"JOKER",suit:"★",red:false,joker:true,label:"조커"});
+  return shuffle(d)
+}
+function removeJokerPairs(hand){
+  const groups={};
+  hand.forEach((c,i)=>{
+    if(c.joker)return;
+    if(!groups[c.rank])groups[c.rank]=[];
+    groups[c.rank].push(i)
+  });
+  const removeSet=new Set();
+  Object.values(groups).forEach(arr=>{
+    const n=Math.floor(arr.length/2)*2;
+    for(let i=0;i<n;i++)removeSet.add(arr[i])
+  });
+  return hand.filter((_,i)=>!removeSet.has(i))
+}
+function jokerNext(g,from){
+  const o=g.order,idx=o.indexOf(from);
+  for(let s=1;s<=o.length;s++){
+    const id=o[(idx+s)%o.length];
+    if((g.hands[id]||[]).length>0)return id
+  }
+  return null
+}
+function jokerTarget(g,uid){
+  const o=g.order,idx=o.indexOf(uid);
+  for(let s=1;s<o.length;s++){
+    const id=o[(idx+s)%o.length];
+    if((g.hands[id]||[]).length>0)return id
+  }
+  return null
+}
+async function startJoker(ps){
+  const deck=makeJokerDeck(),hands={};
+  ps.forEach(p=>hands[p.uid]=[]);
+  let i=0;while(deck.length){hands[ps[i%ps.length].uid].push(deck.pop());i++}
+  Object.keys(hands).forEach(id=>hands[id]=shuffle(removeJokerPairs(hands[id])));
+  const g={type:"joker",order:ps.map(p=>p.uid),hands,turnUid:ps.find(p=>hands[p.uid].length>0)?.uid||ps[0].uid,winnerUid:null,loserUid:null,message:"상대 카드 한 장을 뽑으세요."};
+  await update(ref(db,"rooms/"+roomCode),{status:"playing",mode:"joker",game:g})
+}
+function checkJokerEnd(g){
+  const withCards=g.order.filter(id=>(g.hands[id]||[]).length>0);
+  if(withCards.length<=1){
+    g.loserUid=withCards[0]||null;
+    const safe=g.order.filter(id=>id!==g.loserUid);
+    g.winnerUid=safe[0]||null;
+    return true
+  }
+  return false
+}
+function renderJoker(){
+  const g=roomData.game;show("jokerScreen");
+  const mine=g.turnUid===user.uid,h=g.hands?.[user.uid]||[];
+  $("jokerTurn").textContent=mine?"🟢 내 차례":`⏳ ${escapeHtml(roomData.players[g.turnUid]?.name||"상대")} 차례`;
+  $("jokerRoom").textContent="방 "+roomCode;
+  $("jokerCount").textContent=h.length+"장";
+  $("jokerMessage").textContent=g.message||"";
+  $("jokerPlayers").innerHTML=sortedPlayers().map(p=>`<div class="playerRow"><span>${escapeHtml(p.name)}</span><strong>${g.hands?.[p.uid]?.length||0}장</strong></div>`).join("");
+  $("jokerHand").innerHTML=h.map(c=>cardHtml(c)).join("");
+
+  const targetId=jokerTarget(g,user.uid);
+  const targetHand=targetId?(g.hands[targetId]||[]):[];
+  $("jokerTargetTitle").textContent=targetId?`${escapeHtml(roomData.players[targetId]?.name||"상대")}의 카드에서 한 장을 뽑으세요.`:"대상 없음";
+  $("jokerTarget").innerHTML=mine?targetHand.map((_,i)=>`<div class="cardback" data-i="${i}">♠</div>`).join(""):"";
+  document.querySelectorAll("#jokerTarget .cardback").forEach(el=>el.onclick=()=>jokerTake(Number(el.dataset.i)));
+  $("jokerShuffleBtn").disabled=!mine
+}
+async function jokerTake(index){
+  await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+    if(!g||g.turnUid!==user.uid||g.winnerUid)return g;
+    const targetId=jokerTarget(g,user.uid);if(!targetId)return g;
+    const th=(g.hands[targetId]||[]).slice();if(index<0||index>=th.length)return g;
+    const c=th.splice(index,1)[0];g.hands[targetId]=th;
+    const mh=(g.hands[user.uid]||[]).slice();mh.push(c);g.hands[user.uid]=removeJokerPairs(mh);
+    if(checkJokerEnd(g))return g;
+    g.turnUid=jokerNext(g,user.uid);g.message="상대 카드 한 장을 뽑으세요.";return g
+  })
+}
+async function jokerShuffle(){
+  await runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
+    if(!g||g.turnUid!==user.uid)return g;
+    g.hands[user.uid]=shuffle((g.hands[user.uid]||[]).slice());return g
+  })
+}
+
 /* ---------- DOUBT ---------- */
 async function startDoubt(ps){
   const deck=make52(),hands={};ps.forEach(p=>hands[p.uid]=[]);let i=0;while(deck.length){hands[ps[i%ps.length].uid].push(deck.pop());i++}
@@ -302,7 +394,13 @@ async function resolveDoubt(challenge){
 /* ---------- RESULT ---------- */
 function renderResult(){
   const g=roomData.game;if(!g?.winnerUid)return;
-  show("resultScreen");const w=roomData.players?.[g.winnerUid];$("winnerLabel").textContent=w?`🏆 ${escapeHtml(w.name)} 승리!`:"게임 종료";
+  show("resultScreen");const w=roomData.players?.[g.winnerUid];
+  if(g.type==="joker"&&g.loserUid){
+    const loser=roomData.players?.[g.loserUid];
+    $("winnerLabel").textContent=loser?`🃏 ${escapeHtml(loser.name)} 패배!`:"게임 종료";
+  }else{
+    $("winnerLabel").textContent=w?`🏆 ${escapeHtml(w.name)} 승리!`:"게임 종료";
+  }
   $("resultPlayers").innerHTML=sortedPlayers().map(p=>`<div class="playerRow ${p.uid===g.winnerUid?"me":""}"><span>${escapeHtml(p.name)}</span><strong>${p.uid===g.winnerUid?"🏆":""}</strong></div>`).join("")
 }
 async function backLobby(){
@@ -317,10 +415,12 @@ async function leaveRoom(){
 
 /* ---------- EVENTS ---------- */
 $("createRoomBtn").onclick=createRoom;$("joinRoomBtn").onclick=joinRoom;$("readyBtn").onclick=toggleReady;$("startOnlineBtn").onclick=startOnline;
-$("leaveRoomBtn").onclick=leaveRoom;$("leaveGameBtn").onclick=leaveRoom;$("pokerLeaveBtn").onclick=leaveRoom;$("doubtLeaveBtn").onclick=leaveRoom;$("resultLeaveBtn").onclick=leaveRoom;$("backLobbyBtn").onclick=backLobby;
+$("leaveRoomBtn").onclick=leaveRoom;$("leaveGameBtn").onclick=leaveRoom;$("pokerLeaveBtn").onclick=leaveRoom;$("jokerLeaveBtn").onclick=leaveRoom;$("doubtLeaveBtn").onclick=leaveRoom;$("resultLeaveBtn").onclick=leaveRoom;$("backLobbyBtn").onclick=backLobby;
 $("ocDrawBtn").onclick=ocDraw;
 document.querySelectorAll(".suitBtn").forEach(b=>b.onclick=()=>chooseSuit(b.dataset.suit));
 document.querySelectorAll(".modebtn").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
 $("copyRoomBtn").onclick=async()=>{try{await navigator.clipboard.writeText(roomCode);$("copyRoomBtn").textContent="✓";setTimeout(()=>$("copyRoomBtn").textContent="복사",700)}catch(e){prompt("방 코드",roomCode)}};
 $("roomCodeInput").addEventListener("input",e=>e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,6));
 boot();
+
+$("jokerShuffleBtn").onclick=jokerShuffle;

@@ -12,3 +12,9 @@ button,.linkbtn{width:100%;min-height:52px;border:0;border-radius:14px;padding:1
 .suitgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.suitBtn{height:100px;background:#f8f7f1;color:#161616;font-size:40px}.suitBtn.red{color:var(--red)}.center{text-align:center}.crown{font-size:54px;color:var(--gold)}
 .gamepanel{margin-top:10px}.betrow{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.doubtcenter{padding:16px;border:1px dashed var(--line);border-radius:14px;background:#0d1b14;text-align:center;margin:10px 0}.rankgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:9px 0}.rankbtn{min-height:42px;background:#244235;color:var(--text);font-size:13px}
 @media(max-width:390px){.brand h1{font-size:25px}.modegrid{grid-template-columns:1fr}.card{width:82px;height:118px}}
+.cardback{
+  width:78px;height:116px;flex:0 0 auto;border-radius:11px;
+  background:repeating-linear-gradient(45deg,#1d3d59,#1d3d59 7px,#2b4f70 7px,#2b4f70 14px);
+  border:4px solid #eee9dc;color:#fff;display:grid;place-items:center;
+  font-size:29px;box-shadow:0 6px 14px rgba(0,0,0,.3);cursor:pointer
+}

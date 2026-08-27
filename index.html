@@ -41,6 +41,7 @@
       <div class="modegrid">
         <button class="modebtn selected" data-mode="onecard">⚡ 원카드</button>
         <button class="modebtn" data-mode="poker">♠ 포커</button>
+        <button class="modebtn" data-mode="joker">🃏 조커뽑기</button>
         <button class="modebtn" data-mode="doubt">🎭 다우트</button>
       </div>
       <div id="modeHelp" class="muted"></div>
@@ -89,6 +90,30 @@
       <div id="pokerMessage" class="msg"></div>
       <div id="pokerCards" class="hand centerhand"></div>
       <div id="pokerActions" class="controls"></div>
+    </div>
+  </section>
+
+  <!-- JOKER DRAW -->
+  <section id="jokerScreen" class="screen">
+    <div class="gamehead">
+      <div><div id="jokerTurn" class="pill"></div><div id="jokerRoom" class="muted"></div></div>
+      <button class="tiny dangerText" id="jokerLeaveBtn">나가기</button>
+    </div>
+    <div id="jokerPlayers" class="list"></div>
+    <div class="panel gamepanel">
+      <h2>🃏 조커뽑기</h2>
+      <div id="jokerMessage" class="msg"></div>
+
+      <div class="handbox">
+        <div class="row"><span>내 패</span><strong id="jokerCount"></strong></div>
+        <div id="jokerHand" class="hand"></div>
+        <button id="jokerShuffleBtn" class="secondary">🔀 패 섞기</button>
+      </div>
+
+      <div class="handbox" style="margin-top:10px">
+        <div id="jokerTargetTitle" class="muted">상대 카드에서 한 장을 뽑으세요.</div>
+        <div id="jokerTarget" class="hand"></div>
+      </div>
     </div>
   </section>
 
