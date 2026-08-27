@@ -1,558 +1,5586 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
+
 import {
-  getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider,
-  signInWithPopup, linkWithPopup, signOut
+  getAuth,
+  signInAnonymously,
+  onAuthStateChanged,
+  GoogleAuthProvider,
+  signInWithPopup,
+  linkWithPopup,
+  signOut
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
-import { getDatabase, ref, get, set, update, remove, onValue, runTransaction, onDisconnect } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-database.js";
+
+import {
+  getDatabase,
+  ref,
+  get,
+  set,
+  update,
+  remove,
+  onValue,
+  runTransaction,
+  onDisconnect
+} from "https://www.gstatic.com/firebasejs/12.18.0/firebase-database.js";
+
 import { firebaseConfig } from "./firebase-config.js";
 
-const $=id=>document.getElementById(id);
-const SUITS=[{s:"♠",red:false},{s:"♥",red:true},{s:"♦",red:true},{s:"♣",red:false}];
-const RANKS=["2","3","4","5","6","7","8","9","10","J","Q","K","A"];
+/* =========================================================
+   기본 설정
+========================================================= */
 
-let app,auth,db,user=null,roomCode=null,roomData=null,roomUnsub=null,pendingSeven=false;
-let selectedMode="onecard";
+const $ = id => document.getElementById(id);
 
-function show(id){document.querySelectorAll(".screen").forEach(x=>x.classList.remove("active"));$(id).classList.add("active")}
-function normalizeName(s){return(s||"").trim().slice(0,12)}
-function randomRoomCode(){const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";let out="";for(let i=0;i<6;i++)out+=chars[Math.floor(Math.random()*chars.length)];return out}
-function setError(s){$("setupError").textContent=s||""}
-function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
-function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[ch]))}
-function configLooksReady(){return firebaseConfig.apiKey&&!firebaseConfig.apiKey.includes("YOUR_")&&firebaseConfig.databaseURL}
-function modeLabel(m){return m==="onecard"?"⚡ 원카드":m==="poker"?"♠ 포커":m==="joker"?"🃏 조커뽑기":"🎭 다우트"}
+const SUITS = [
+  { s: "♠", red: false },
+  { s: "♥", red: true },
+  { s: "♦", red: true },
+  { s: "♣", red: false }
+];
 
-const AC_MAX_ROOM_PLAYERS=4;
-const AC_VALID_MODES=new Set(["onecard","poker","joker","doubt"]);
+const RANKS = [
+  "2", "3", "4", "5", "6", "7",
+  "8", "9", "10", "J", "Q", "K", "A"
+];
 
-function antiCheatFail(reason){
-  console.warn("[CARD FORTRESS Anti-Cheat]",reason);
-  const el=document.querySelector(".screen.active .msg");
-  if(el) el.textContent="⚠ 잘못된 게임 상태가 감지되었습니다.";
+const AC_MAX_ROOM_PLAYERS = 6;
+
+const AC_VALID_MODES = new Set([
+  "onecard",
+  "poker",
+  "joker",
+  "doubt"
+]);
+
+let app = null;
+let auth = null;
+let db = null;
+let user = null;
+
+let roomCode = null;
+let roomData = null;
+let roomUnsub = null;
+
+let pendingSeven = false;
+let selectedMode = "onecard";
+
+/* =========================================================
+   공통 함수
+========================================================= */
+
+function show(id) {
+  document.querySelectorAll(".screen").forEach(el => {
+    el.classList.remove("active");
+  });
+
+  const target = $(id);
+
+  if (target) {
+    target.classList.add("active");
+  }
 }
 
-function validateRoomSnapshot(room){
-  if(!room || typeof room!=="object") return false;
-  const players=room.players||{};
-  const ids=Object.keys(players);
-  if(ids.length<1 || ids.length>AC_MAX_ROOM_PLAYERS) return false;
-  if(!room.hostUid || !players[room.hostUid]) return false;
-  if(room.mode && !AC_VALID_MODES.has(room.mode)) return false;
+function normalizeName(value) {
+  return String(value || "")
+    .trim()
+    .slice(0, 12);
+}
 
-  for(const id of ids){
-    const p=players[id];
-    if(!p || typeof p.name!=="string" || p.name.length<1 || p.name.length>12) return false;
-    if(typeof p.seat!=="number" || p.seat<0 || p.seat>3) return false;
+function randomRoomCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  let result = "";
+
+  for (let i = 0; i < 6; i++) {
+    result += chars[
+      Math.floor(Math.random() * chars.length)
+    ];
   }
 
-  const g=room.game;
-  if(g){
-    if(g.order && (!Array.isArray(g.order) || g.order.length<2 || g.order.length>4)) return false;
-    if(g.turnUid && !players[g.turnUid]) return false;
+  return result;
+}
 
-    if(g.tokens){
-      for(const v of Object.values(g.tokens)){
-        if(typeof v!=="number" || !Number.isFinite(v) || v<0 || v>100000) return false;
-      }
-    }
-    if(typeof g.pot==="number" && (g.pot<0 || g.pot>400000)) return false;
+function setError(message) {
+  const el = $("setupError");
 
-    if(g.hands){
-      for(const h of Object.values(g.hands)){
-        if(!Array.isArray(h) || h.length>60) return false;
-      }
-    }
-
-    if(typeof g.rev==="number" && (g.rev<0 || !Number.isInteger(g.rev))) return false;
+  if (el) {
+    el.textContent = message || "";
   }
+}
+
+function shuffle(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(
+      Math.random() * (i + 1)
+    );
+
+    [
+      array[i],
+      array[j]
+    ] = [
+      array[j],
+      array[i]
+    ];
+  }
+
+  return array;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(
+      /[&<>"']/g,
+      ch => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+      })[ch]
+    );
+}
+
+function configLooksReady() {
+  return !!(
+    firebaseConfig.apiKey &&
+    firebaseConfig.databaseURL &&
+    !firebaseConfig.apiKey.includes("YOUR_")
+  );
+}
+
+function modeLabel(mode) {
+  if (mode === "onecard") return "⚡ 원카드";
+  if (mode === "poker") return "♠ 포커";
+  if (mode === "joker") return "🃏 조커뽑기";
+  if (mode === "doubt") return "🎭 다우트";
+
+  return mode;
+}
+
+/* =========================================================
+   안티치트
+========================================================= */
+
+function antiCheatFail(reason) {
+  console.warn(
+    "[CARD FORTRESS Anti-Cheat]",
+    reason
+  );
+
+  const el =
+    document.querySelector(
+      ".screen.active .msg"
+    );
+
+  if (el) {
+    el.textContent =
+      "⚠ 잘못된 게임 상태가 감지되었습니다.";
+  }
+}
+
+function validateRoomSnapshot(room) {
+
+  if (
+    !room ||
+    typeof room !== "object"
+  ) {
+    return false;
+  }
+
+  const players =
+    room.players || {};
+
+  const ids =
+    Object.keys(players);
+
+  if (
+    ids.length < 1 ||
+    ids.length > AC_MAX_ROOM_PLAYERS
+  ) {
+    return false;
+  }
+
+  if (
+    !room.hostUid ||
+    !players[room.hostUid]
+  ) {
+    return false;
+  }
+
+  if (
+    room.mode &&
+    !AC_VALID_MODES.has(room.mode)
+  ) {
+    return false;
+  }
+
+  const maxPlayers =
+    Number(room.maxPlayers || 6);
+
+  if (
+    maxPlayers < 2 ||
+    maxPlayers > 6 ||
+    ids.length > maxPlayers
+  ) {
+    return false;
+  }
+
+  for (const id of ids) {
+
+    const player =
+      players[id];
+
+    if (
+      !player ||
+      typeof player.name !== "string" ||
+      player.name.length < 1 ||
+      player.name.length > 12
+    ) {
+      return false;
+    }
+
+    if (
+      typeof player.seat !== "number" ||
+      player.seat < 0 ||
+      player.seat > 5
+    ) {
+      return false;
+    }
+  }
+
+  const game =
+    room.game;
+
+  if (!game) {
+    return true;
+  }
+
+  if (
+    game.order &&
+    (
+      !Array.isArray(game.order) ||
+      game.order.length < 2 ||
+      game.order.length > 6
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    game.turnUid &&
+    !players[game.turnUid]
+  ) {
+    return false;
+  }
+
+  if (game.tokens) {
+
+    for (
+      const token of
+      Object.values(game.tokens)
+    ) {
+
+      if (
+        typeof token !== "number" ||
+        !Number.isFinite(token) ||
+        token < 0 ||
+        token > 100000
+      ) {
+        return false;
+      }
+    }
+  }
+
+  if (
+    typeof game.pot === "number" &&
+    (
+      game.pot < 0 ||
+      game.pot > 600000
+    )
+  ) {
+    return false;
+  }
+
+  if (game.hands) {
+
+    for (
+      const hand of
+      Object.values(game.hands)
+    ) {
+
+      if (
+        !Array.isArray(hand) ||
+        hand.length > 60
+      ) {
+        return false;
+      }
+    }
+  }
+
+  if (
+    typeof game.rev === "number" &&
+    (
+      game.rev < 0 ||
+      !Number.isInteger(game.rev)
+    )
+  ) {
+    return false;
+  }
+
   return true;
 }
 
-async function secureGameTx(mutator){
-  return runTransaction(ref(db,`rooms/${roomCode}/game`),g=>{
-    if(!g) return g;
+async function secureGameTx(mutator) {
 
-    // 현재 방 참가자가 아니면 어떤 게임 액션도 허용하지 않음.
-    if(!roomData?.players?.[user?.uid]){
-      antiCheatFail("room member check failed");
-      return g;
-    }
-
-    const oldRev=Number.isInteger(g.rev)?g.rev:0;
-    const result=mutator(g);
-    if(!result) return result;
-
-    result.rev=oldRev+1;
-    result.lastActor=user.uid;
-    return result;
-  });
-}
-
-
-function renderAccount(u){
-  const status=$("accountStatus"), login=$("googleLoginBtn"), logout=$("googleLogoutBtn");
-  if(!status||!login||!logout)return;
-  const isGoogle=!!u?.providerData?.some(p=>p.providerId==="google.com");
-  if(isGoogle){
-    status.textContent=`✅ ${u.displayName||u.email||"Google 사용자"} 로그인됨`;
-    login.style.display="none"; logout.style.display="block";
-    if(!$("nicknameInput").value && u.displayName) $("nicknameInput").value=normalizeName(u.displayName);
-  }else{
-    status.textContent=u?"👤 게스트로 접속 중":"연결 준비 중...";
-    login.style.display="block"; logout.style.display="none";
+  if (
+    !roomCode ||
+    !user
+  ) {
+    return null;
   }
-}
 
-async function googleLogin(){
-  if(!auth)return;
-  setError("");
-  const provider=new GoogleAuthProvider();
-  provider.setCustomParameters({prompt:"select_account"});
-  try{
-    // 익명 계정이면 Google 계정에 연결해서 같은 UID를 최대한 유지한다.
-    if(auth.currentUser?.isAnonymous){
-      try{
-        await linkWithPopup(auth.currentUser,provider);
-      }catch(e){
-        if(["auth/credential-already-in-use","auth/email-already-in-use","auth/provider-already-linked"].includes(e.code)){
-          await signInWithPopup(auth,provider);
-        }else throw e;
+  return runTransaction(
+    ref(
+      db,
+      `rooms/${roomCode}/game`
+    ),
+
+    game => {
+
+      if (!game) {
+        return game;
       }
-    }else{
-      await signInWithPopup(auth,provider);
+
+      if (
+        !roomData?.players?.[user.uid]
+      ) {
+
+        antiCheatFail(
+          "not room member"
+        );
+
+        return game;
+      }
+
+      const oldRev =
+        Number.isInteger(game.rev)
+          ? game.rev
+          : 0;
+
+      const result =
+        mutator(game);
+
+      if (!result) {
+        return result;
+      }
+
+      result.rev =
+        oldRev + 1;
+
+      result.lastActor =
+        user.uid;
+
+      return result;
     }
-  }catch(e){
-    console.error(e);
-    if(e.code!=="auth/popup-closed-by-user" && e.code!=="auth/cancelled-popup-request")
-      setError("Google 로그인 실패: "+(e.message||e.code));
+  );
+}
+
+/* =========================================================
+   Google / 게스트 로그인
+========================================================= */
+
+function renderAccount(currentUser) {
+
+  const status =
+    $("accountStatus");
+
+  const login =
+    $("googleLoginBtn");
+
+  const logout =
+    $("googleLogoutBtn");
+
+  const isGoogle =
+    !!currentUser?.providerData?.some(
+      provider =>
+        provider.providerId ===
+        "google.com"
+    );
+
+  if (status) {
+
+    if (isGoogle) {
+
+      status.textContent =
+        `✅ ${
+          currentUser.displayName ||
+          currentUser.email ||
+          "Google 사용자"
+        } 로그인됨`;
+
+    } else if (currentUser) {
+
+      status.textContent =
+        "👤 게스트로 접속 중";
+
+    } else {
+
+      status.textContent =
+        "연결 준비 중...";
+    }
+  }
+
+  if (login) {
+    login.style.display =
+      isGoogle
+        ? "none"
+        : "block";
+  }
+
+  if (logout) {
+    logout.style.display =
+      isGoogle
+        ? "block"
+        : "none";
+  }
+
+  if (
+    isGoogle &&
+    currentUser.displayName
+  ) {
+
+    const input =
+      $("nicknameInput");
+
+    if (
+      input &&
+      !input.value
+    ) {
+
+      input.value =
+        normalizeName(
+          currentUser.displayName
+        );
+    }
   }
 }
 
-async function switchToGuest(){
-  if(roomCode){setError("방에서 나온 뒤 계정을 전환하세요.");return}
-  try{await signOut(auth);await signInAnonymously(auth)}catch(e){setError("게스트 전환 실패: "+e.message)}
+async function googleLogin() {
+
+  if (!auth) return;
+
+  if (roomCode) {
+
+    setError(
+      "방에서 나온 뒤 계정을 전환하세요."
+    );
+
+    return;
+  }
+
+  setError("");
+
+  const provider =
+    new GoogleAuthProvider();
+
+  provider.setCustomParameters({
+    prompt: "select_account"
+  });
+
+  try {
+
+    if (
+      auth.currentUser?.isAnonymous
+    ) {
+
+      try {
+
+        await linkWithPopup(
+          auth.currentUser,
+          provider
+        );
+
+      } catch (error) {
+
+        if (
+          [
+            "auth/credential-already-in-use",
+            "auth/email-already-in-use",
+            "auth/provider-already-linked"
+          ].includes(error.code)
+        ) {
+
+          await signInWithPopup(
+            auth,
+            provider
+          );
+
+        } else {
+
+          throw error;
+        }
+      }
+
+    } else {
+
+      await signInWithPopup(
+        auth,
+        provider
+      );
+    }
+
+  } catch (error) {
+
+    console.error(error);
+
+    if (
+      error.code !==
+        "auth/popup-closed-by-user" &&
+      error.code !==
+        "auth/cancelled-popup-request"
+    ) {
+
+      setError(
+        "Google 로그인 실패: " +
+        (
+          error.message ||
+          error.code
+        )
+      );
+    }
+  }
 }
 
-async function boot(){
-  if(!configLooksReady()){setError("Firebase 설정 필요");return}
-  try{
-    app=initializeApp(firebaseConfig);auth=getAuth(app);db=getDatabase(app);
-    let initialized=false;
-    onAuthStateChanged(auth,async u=>{
-      if(!u && !initialized){
-        initialized=true;
-        try{await signInAnonymously(auth)}catch(e){console.error(e);setError("게스트 로그인 실패: "+e.message)}
+async function switchToGuest() {
+
+  if (roomCode) {
+
+    setError(
+      "방에서 나온 뒤 계정을 전환하세요."
+    );
+
+    return;
+  }
+
+  try {
+
+    await signOut(auth);
+
+    await signInAnonymously(auth);
+
+  } catch (error) {
+
+    setError(
+      "게스트 전환 실패: " +
+      error.message
+    );
+  }
+}
+
+/* =========================================================
+   Firebase 시작
+========================================================= */
+
+async function boot() {
+
+  if (!configLooksReady()) {
+
+    setError(
+      "Firebase 설정 필요"
+    );
+
+    return;
+  }
+
+  try {
+
+    app =
+      initializeApp(
+        firebaseConfig
+      );
+
+    auth =
+      getAuth(app);
+
+    db =
+      getDatabase(app);
+
+    onAuthStateChanged(
+      auth,
+
+      async currentUser => {
+
+        if (!currentUser) {
+
+          try {
+
+            await signInAnonymously(
+              auth
+            );
+
+          } catch (error) {
+
+            console.error(error);
+
+            setError(
+              "게스트 로그인 실패: " +
+              error.message
+            );
+          }
+
+          return;
+        }
+
+        user =
+          currentUser;
+
+        const badge =
+          $("connectionBadge");
+
+        if (badge) {
+          badge.classList.add(
+            "online"
+          );
+        }
+
+        renderAccount(
+          currentUser
+        );
+      }
+    );
+
+  } catch (error) {
+
+    console.error(error);
+
+    setError(
+      "Firebase 연결 실패: " +
+      error.message
+    );
+  }
+}
+
+/* =========================================================
+   카드 덱
+========================================================= */
+
+function makeOneCardDeck() {
+
+  const deck = [];
+
+  for (const suit of SUITS) {
+
+    for (const rank of RANKS) {
+
+      deck.push({
+        rank,
+        suit: suit.s,
+        red: suit.red,
+        joker: false
+      });
+    }
+  }
+
+  if (
+    Math.random() < 0.35
+  ) {
+
+    deck.push({
+      rank: "JOKER",
+      suit: "★",
+      red: false,
+      joker: true,
+      jokerType: "black",
+      label: "흑조커"
+    });
+  }
+
+  if (
+    Math.random() < 0.20
+  ) {
+
+    deck.push({
+      rank: "JOKER",
+      suit: "★",
+      red: true,
+      joker: true,
+      jokerType: "color",
+      label: "컬러조커"
+    });
+  }
+
+  return shuffle(deck);
+}
+
+function make52() {
+
+  const deck = [];
+
+  for (const suit of SUITS) {
+
+    for (const rank of RANKS) {
+
+      deck.push({
+        rank,
+        suit: suit.s,
+        red: suit.red,
+        joker: false
+      });
+    }
+  }
+
+  return shuffle(deck);
+}
+
+function makePokerDeck() {
+
+  const deck =
+    make52();
+
+  deck.push({
+    rank: "JOKER",
+    suit: "★",
+    red: false,
+    joker: true,
+    label: "흑조커"
+  });
+
+  deck.push({
+    rank: "JOKER",
+    suit: "★",
+    red: true,
+    joker: true,
+    label: "컬러조커"
+  });
+
+  return shuffle(deck);
+}
+
+function cardHtml(
+  card,
+  playable = false,
+  index = -1
+) {
+
+  if (!card) {
+    return "";
+  }
+
+  if (card.joker) {
+
+    return `
+      <div
+        class="card joker ${
+          playable
+            ? "playable"
+            : ""
+        }"
+        data-idx="${index}"
+      >
+        <div class="rank">★</div>
+        <div class="big">🃏</div>
+        <div class="bottom">
+          ${
+            card.label ||
+            "JOKER"
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div
+      class="card ${
+        card.red
+          ? "red"
+          : ""
+      } ${
+        playable
+          ? "playable"
+          : ""
+      }"
+      data-idx="${index}"
+    >
+      <div class="rank">
+        ${card.rank}${card.suit}
+      </div>
+
+      <div class="big">
+        ${card.suit}
+      </div>
+
+      <div class="bottom">
+        ${card.rank}
+      </div>
+    </div>
+  `;
+}
+
+/* =========================================================
+   방 생성
+========================================================= */
+
+async function createRoom() {
+
+  setError("");
+
+  const name =
+    normalizeName(
+      $("nicknameInput")?.value
+    );
+
+  if (!name) {
+
+    setError(
+      "닉네임을 입력하세요."
+    );
+
+    return;
+  }
+
+  if (!user) {
+
+    setError(
+      "아직 온라인 연결 중입니다."
+    );
+
+    return;
+  }
+
+  try {
+
+    for (
+      let tries = 0;
+      tries < 10;
+      tries++
+    ) {
+
+      const code =
+        randomRoomCode();
+
+      const roomRef =
+        ref(
+          db,
+          `rooms/${code}`
+        );
+
+      const transaction =
+        await runTransaction(
+          roomRef,
+
+          current => {
+
+            if (
+              current !== null
+            ) {
+              return;
+            }
+
+            return {
+              hostUid:
+                user.uid,
+
+              status:
+                "lobby",
+
+              mode:
+                "onecard",
+
+              maxPlayers:
+                6,
+
+              createdAt:
+                Date.now(),
+
+              players: {
+
+                [user.uid]: {
+
+                  name,
+
+                  ready:
+                    false,
+
+                  seat:
+                    0,
+
+                  joinedAt:
+                    Date.now()
+                }
+              }
+            };
+          }
+        );
+
+      if (
+        transaction.committed
+      ) {
+
+        enterRoom(code);
+
         return;
       }
-      initialized=true; user=u;
-      $("connectionBadge").classList.toggle("online",!!u);
-      renderAccount(u);
-    });
-  }catch(e){console.error(e);setError("Firebase 연결 실패: "+e.message)}
+    }
+
+    setError(
+      "방 코드를 만들지 못했습니다."
+    );
+
+  } catch (error) {
+
+    console.error(error);
+
+    setError(
+      "방 생성 실패: " +
+      (
+        error.message ||
+        error.code
+      )
+    );
+  }
 }
 
-/* ---------- DECK ---------- */
-function makeOneCardDeck(){
-  const d=[];for(const su of SUITS)for(const r of RANKS)d.push({rank:r,suit:su.s,red:su.red,joker:false});
-  if(Math.random()<.35)d.push({rank:"JOKER",suit:"★",red:false,joker:true,jokerType:"black",label:"흑조커"});
-  if(Math.random()<.20)d.push({rank:"JOKER",suit:"★",red:true,joker:true,jokerType:"color",label:"컬러조커"});
-  return shuffle(d)
-}
-function make52(){const d=[];for(const su of SUITS)for(const r of RANKS)d.push({rank:r,suit:su.s,red:su.red,joker:false});return shuffle(d)}
-function makePokerDeck(){const d=make52();d.push({rank:"JOKER",suit:"★",red:false,joker:true,label:"흑조커"});d.push({rank:"JOKER",suit:"★",red:true,joker:true,label:"컬러조커"});return shuffle(d)}
-function cardHtml(c,playable=false,idx=-1){
-  if(!c)return"";
-  if(c.joker)return`<div class="card joker ${playable?"playable":""}" data-idx="${idx}"><div class="rank">★</div><div class="big">🃏</div><div class="bottom">${c.label||"JOKER"}</div></div>`;
-  return`<div class="card ${c.red?"red":""} ${playable?"playable":""}" data-idx="${idx}"><div class="rank">${c.rank}${c.suit}</div><div class="big">${c.suit}</div><div class="bottom">${c.rank}</div></div>`
-}
+/* =========================================================
+   방 참가
+========================================================= */
 
-/* ---------- ROOM: keep working flow ---------- */
-async function createRoom(){
-  setError("");const name=normalizeName($("nicknameInput").value);
-  if(!name){setError("닉네임을 입력하세요.");return}
-  if(!user){setError("아직 온라인 연결 중입니다.");return}
-  for(let tries=0;tries<10;tries++){
-    const code=randomRoomCode(),roomRef=ref(db,"rooms/"+code);
-    const tx=await runTransaction(roomRef,cur=>{
-      if(cur!==null)return;
-      return{hostUid:user.uid,status:"lobby",mode:"onecard",createdAt:Date.now(),players:{[user.uid]:{name,ready:false,seat:0,joinedAt:Date.now()}}}
-    });
-    if(tx.committed){enterRoom(code);return}
+async function joinRoom() {
+
+  setError("");
+
+  const name =
+    normalizeName(
+      $("nicknameInput")?.value
+    );
+
+  const code =
+    String(
+      $("roomCodeInput")?.value ||
+      ""
+    )
+      .trim()
+      .toUpperCase();
+
+  if (!name) {
+
+    setError(
+      "닉네임을 입력하세요."
+    );
+
+    return;
   }
-  setError("방 코드를 만들지 못했습니다. 다시 시도하세요.")
-}
-async function joinRoom(){
-  setError("");const name=normalizeName($("nicknameInput").value),code=($("roomCodeInput").value||"").trim().toUpperCase();
-  if(!name){setError("닉네임을 입력하세요.");return}
-  if(code.length!==6){setError("6자리 방 코드를 입력하세요.");return}
-  if(!user){setError("아직 온라인 연결 중입니다.");return}
-  const rr=ref(db,"rooms/"+code),snap=await get(rr);
-  if(!snap.exists()){setError("존재하지 않는 방입니다.");return}
-  const room=snap.val();if(room.status!=="lobby"){setError("이미 게임이 시작된 방입니다.");return}
-  const ex=room.players||{};if(!ex[user.uid]&&Object.keys(ex).length>=4){setError("방이 가득 찼습니다.");return}
-  if(!ex[user.uid]){
-    const seats=Object.values(ex).map(p=>p.seat);let seat=0;while(seats.includes(seat))seat++;
-    await set(ref(db,`rooms/${code}/players/${user.uid}`),{name,ready:false,seat,joinedAt:Date.now()})
+
+  if (
+    code.length !== 6
+  ) {
+
+    setError(
+      "6자리 방 코드를 입력하세요."
+    );
+
+    return;
   }
-  enterRoom(code)
-}
-async function enterRoom(code){
-  roomCode=code;$("roomCodeLabel").textContent=code;$("gameRoomLabel").textContent="방 "+code;$("doubtRoom").textContent="방 "+code;
-  if(roomUnsub)roomUnsub();
-  const pr=ref(db,`rooms/${code}/players/${user.uid}`);try{onDisconnect(pr).remove()}catch(e){}
-  roomUnsub=onValue(ref(db,"rooms/"+code),snap=>{
-    if(!snap.exists()){roomData=null;roomCode=null;show("homeScreen");setError("방이 종료되었습니다.");return}
-    roomData=snap.val();
-    if(!validateRoomSnapshot(roomData)){
-      antiCheatFail("invalid room snapshot");
+
+  if (!user) {
+
+    setError(
+      "아직 온라인 연결 중입니다."
+    );
+
+    return;
+  }
+
+  try {
+
+    const roomRef =
+      ref(
+        db,
+        `rooms/${code}`
+      );
+
+    const snapshot =
+      await get(roomRef);
+
+    if (
+      !snapshot.exists()
+    ) {
+
+      setError(
+        "존재하지 않는 방입니다."
+      );
+
       return;
     }
-    renderRoom()
-  });
-  show("lobbyScreen")
-}
-function sortedPlayers(){
-  if(!roomData?.players)return[];
-  return Object.entries(roomData.players).map(([uid,p])=>({uid,...p})).sort((a,b)=>(a.seat??99)-(b.seat??99))
-}
-async function toggleReady(){
-  const me=roomData?.players?.[user.uid];if(me)await update(ref(db,`rooms/${roomCode}/players/${user.uid}`),{ready:!me.ready})
-}
-async function setMode(mode){
-  if(roomData?.hostUid!==user.uid) return;
-  if(!AC_VALID_MODES.has(mode)){antiCheatFail("invalid mode");return;}
-  await update(ref(db,`rooms/${roomCode}`),{mode})
-}
-function renderRoom(){
-  const players=sortedPlayers();if(!players.length)return;
-  if(roomData.status==="lobby"){
-    show("lobbyScreen");
-    $("playerList").innerHTML=players.map(p=>`<div class="playerRow ${p.uid===user.uid?"me":""}"><div class="playerName">${escapeHtml(p.name)} ${p.uid===roomData.hostUid?"👑":""}</div><strong>${p.ready?"✅":"⏳"}</strong></div>`).join("");
-    const me=roomData.players[user.uid];$("readyBtn").textContent=me?.ready?"준비 취소":"준비";
-    selectedMode=roomData.mode||"onecard";
-    document.querySelectorAll(".modebtn").forEach(b=>{b.classList.toggle("selected",b.dataset.mode===selectedMode);b.disabled=roomData.hostUid!==user.uid});
-    $("modeHelp").textContent=`현재 모드: ${modeLabel(selectedMode)} · 방장만 변경 가능`;
-    const host=roomData.hostUid===user.uid;$("startOnlineBtn").style.display=host?"block":"none";
-    $("startOnlineBtn").disabled=!(players.length>=2&&players.every(p=>p.ready))
-  }else if(roomData.status==="playing"){
-    if(roomData.mode==="onecard")renderOneCard();
-    else if(roomData.mode==="poker")renderPoker();
-    else if(roomData.mode==="joker")renderJoker();
-    else renderDoubt()
-  }else if(roomData.status==="finished")renderResult()
-}
 
-/* ---------- START DISPATCH ---------- */
-async function startOnline(){
-  if(roomData?.hostUid!==user.uid) return;
-  if(roomData?.status!=="lobby"){antiCheatFail("start outside lobby");return;}
-  const ps=sortedPlayers();
-  if(ps.length<2||ps.length>4||!ps.every(p=>p.ready)) return;
-  if(roomData.mode==="onecard")await startOneCard(ps);
-  else if(roomData.mode==="poker")await startPoker(ps);
-  else if(roomData.mode==="joker")await startJoker(ps);
-  else await startDoubt(ps)
-}
+    const room =
+      snapshot.val();
 
-/* ---------- ONE CARD ---------- */
-function attackValue(c){if(!c)return 0;if(c.joker)return c.jokerType==="color"?7:5;if(c.rank==="A"&&c.suit==="♠")return 5;if(c.rank==="A")return 3;if(c.rank==="2")return 2;return 0}
-function nextUid(game,from,steps=1){const o=game.order;let i=o.indexOf(from);if(i<0)return o[0];let m=0;while(m<steps){i=(i+game.direction+o.length)%o.length;const id=o[i];if(!game.eliminated?.[id])m++}return o[i]}
-function canPlay(game,c){
-  const t=game.topCard;if(!t)return true;
-  if(game.extraChain){if(c.joker)return true;if(game.chosenSuit)return c.suit===game.chosenSuit||c.rank==="7";return c.suit===t.suit||c.rank===t.rank}
-  if(game.pendingDraw>0){
-    if(t.rank==="2"&&!t.joker){if(c.rank==="3"&&c.suit===t.suit)return true;return c.rank==="2"}
-    if(t.rank==="A"&&t.suit==="♠"&&!t.joker)return !!c.joker;
-    if(t.rank==="A"&&!t.joker)return c.rank==="A";
-    if(t.joker&&t.jokerType==="black")return(c.rank==="A"&&c.suit==="♠")||(c.joker&&c.jokerType==="color");
-    return false
-  }
-  if(c.joker)return true;if(game.chosenSuit)return c.suit===game.chosenSuit||c.rank==="7";if(t.joker)return c.joker||attackValue(c)>0;return c.suit===t.suit||c.rank===t.rank
-}
-function drawState(game,n){const out=[];for(let i=0;i<n;i++){if(!game.deck.length){if(game.discard.length<=1)break;const top=game.discard.pop();game.deck=shuffle(game.discard);game.discard=[top]}if(game.deck.length)out.push(game.deck.pop())}return out}
-async function startOneCard(ps){
-  const deck=makeOneCardDeck(),hands={};ps.forEach(p=>hands[p.uid]=[]);
-  for(let r=0;r<7;r++)ps.forEach(p=>hands[p.uid].push(deck.pop()));
-  let si=deck.findIndex(c=>!c.joker&&!["A","2","J","Q","K","7"].includes(c.rank));if(si<0)si=0;const starter=deck.splice(si,1)[0];
-  const game={type:"onecard",order:ps.map(p=>p.uid),turnUid:ps[0].uid,direction:1,pendingDraw:0,chosenSuit:null,extraChain:false,deck,discard:[starter],topCard:starter,hands,eliminated:{},winnerUid:null,message:"게임 시작",rev:0,lastActor:user.uid};
-  await update(ref(db,"rooms/"+roomCode),{status:"playing",mode:"onecard",game})
-}
-function renderOneCard(){
-  const g=roomData.game;show("onecardScreen");const ps=sortedPlayers(),h=g.hands?.[user.uid]||[],mine=g.turnUid===user.uid;
-  $("ocTurnLabel").textContent=mine?"🟢 내 차례":`⏳ ${escapeHtml(roomData.players[g.turnUid]?.name||"상대")} 차례`;
-  $("ocTopCard").innerHTML=cardHtml(g.topCard);$("ocChosenSuit").textContent=g.chosenSuit?`지정: ${g.chosenSuit}`:"";$("ocAttackInfo").textContent=g.pendingDraw?`공격 +${g.pendingDraw}`:"";$("ocMessage").textContent=g.message||"";$("ocMyCount").textContent=h.length+"장";$("ocDrawBtn").disabled=!mine;
-  $("ocOpponents").innerHTML=ps.filter(p=>p.uid!==user.uid).map(p=>{const n=g.hands?.[p.uid]?.length??0;return`<div class="opponent ${n<=2?"danger":""}"><strong>${escapeHtml(p.name)}</strong><br>${n}장</div>`}).join("");
-  $("ocHand").innerHTML=h.map((c,i)=>cardHtml(c,mine&&canPlay(g,c),i)).join("");
-  document.querySelectorAll("#ocHand .card").forEach(el=>el.onclick=()=>{if(mine&&el.classList.contains("playable"))playOneCard(Number(el.dataset.idx))});
-  if(pendingSeven&&mine)show("suitScreen")
-}
-async function playOneCard(index){
-  let need=false;
-  const tx=await secureGameTx(g=>{
-    if(!g||g.winnerUid||g.turnUid!==user.uid)return g;const h=(g.hands?.[user.uid]||[]).slice(),c=h[index];if(!c||!canPlay(g,c))return g;
-    const before=g.topCard,block=g.pendingDraw>0&&before?.rank==="2"&&c.rank==="3"&&c.suit===before.suit;
-    h.splice(index,1);g.hands[user.uid]=h;g.discard.push(c);g.topCard=c;if(block)g.pendingDraw=0;else{const a=attackValue(c);if(a)g.pendingDraw=(g.pendingDraw||0)+a}g.chosenSuit=null;
-    if(!h.length){g.winnerUid=user.uid;return g}
-    if(c.rank==="7"){g.waitingSuitUid=user.uid;need=true;return g}
-    const n=g.order.length;let extra=false,skip=false;if(c.rank==="K")extra=true;else if(c.rank==="J"&&n<=2)extra=true;else if(c.rank==="J")skip=true;else if(c.rank==="Q"){g.direction*=-1} // FIX: 2인도 skip 금지
-    if(extra){g.extraChain=true;g.turnUid=user.uid}else{g.extraChain=false;g.turnUid=nextUid(g,user.uid,skip?2:1)}
-    return g
-  });
-  if(tx.committed&&need){pendingSeven=true;show("suitScreen")}
-}
-async function chooseSuit(s){
-  const tx=await secureGameTx(g=>{if(!g||g.waitingSuitUid!==user.uid)return g;g.chosenSuit=s;g.waitingSuitUid=null;g.extraChain=false;g.turnUid=nextUid(g,user.uid,1);return g});
-  if(tx.committed){pendingSeven=false;show("onecardScreen")}
-}
-async function ocDraw(){
-  await secureGameTx(g=>{
-    if(!g||g.turnUid!==user.uid||g.waitingSuitUid)return g;if(g.extraChain){g.extraChain=false;g.turnUid=nextUid(g,user.uid,1);return g}
-    const h=(g.hands?.[user.uid]||[]).slice(),n=g.pendingDraw||1;h.push(...drawState(g,n));g.hands[user.uid]=h;g.pendingDraw=0;g.chosenSuit=null;
-    if(h.length>20){g.eliminated[user.uid]=true;const alive=g.order.filter(id=>!g.eliminated[id]);if(alive.length===1)g.winnerUid=alive[0];else g.turnUid=nextUid(g,user.uid,1);return g}
-    g.turnUid=nextUid(g,user.uid,1);return g
-  })
-}
+    if (
+      room.status !==
+      "lobby"
+    ) {
 
-/* ---------- POKER ---------- */
-const PV={A:14,K:13,Q:12,J:11,"10":10,"9":9,"8":8,"7":7,"6":6,"5":5,"4":4,"3":3,"2":2};
-function pokerSimpleScore(hand){
-  // 5-card evaluator with jokers by brute-force substitution of ranks/suits.
-  const jokers=hand.filter(c=>c.joker).length,base=hand.filter(c=>!c.joker);
-  if(!jokers)return eval5(base);
-  const choices=[];for(const su of SUITS)for(const r of RANKS)choices.push({rank:r,suit:su.s,red:su.red,joker:false});
-  let best=null;
-  function rec(arr,n){if(n===0){const s=eval5(arr);if(!best||cmpScore(s,best)>0)best=s;return}for(const c of choices)rec(arr.concat([c]),n-1)}
-  rec(base,jokers);return best
-}
-function eval5(h){
-  const vals=h.map(c=>PV[c.rank]).sort((a,b)=>b-a),counts={};vals.forEach(v=>counts[v]=(counts[v]||0)+1);
-  const groups=Object.entries(counts).map(([v,n])=>({v:+v,n})).sort((a,b)=>b.n-a.n||b.v-a.v);
-  const flush=h.every(c=>c.suit===h[0].suit);let uniq=[...new Set(vals)];if(uniq.includes(14))uniq.push(1);uniq=uniq.sort((a,b)=>b-a);
-  let sh=0;for(let i=0;i<=uniq.length-5;i++)if(uniq[i]-uniq[i+4]===4){sh=uniq[i];break}
-  if(flush&&sh)return{cat:8,tie:[sh],name:"스트레이트 플러시"};
-  if(groups[0].n===4)return{cat:7,tie:[groups[0].v,groups[1].v],name:"포카드"};
-  if(groups[0].n===3&&groups[1]?.n===2)return{cat:6,tie:[groups[0].v,groups[1].v],name:"풀하우스"};
-  if(flush)return{cat:5,tie:vals,name:"플러시"};
-  if(sh)return{cat:4,tie:[sh],name:"스트레이트"};
-  if(groups[0].n===3)return{cat:3,tie:[groups[0].v,...groups.slice(1).map(x=>x.v)],name:"트리플"};
-  if(groups[0].n===2&&groups[1]?.n===2)return{cat:2,tie:[Math.max(groups[0].v,groups[1].v),Math.min(groups[0].v,groups[1].v),groups[2].v],name:"투페어"};
-  if(groups[0].n===2)return{cat:1,tie:[groups[0].v,...groups.slice(1).map(x=>x.v)],name:"원페어"};
-  return{cat:0,tie:vals,name:"하이카드"}
-}
-function cmpScore(a,b){if(a.cat!==b.cat)return a.cat-b.cat;for(let i=0;i<Math.max(a.tie.length,b.tie.length);i++){const d=(a.tie[i]||0)-(b.tie[i]||0);if(d)return d}return 0}
-async function startPoker(ps){
-  const deck=makePokerDeck(),hands={},initial={},tokens={};ps.forEach(p=>{initial[p.uid]=[deck.pop(),deck.pop()];hands[p.uid]=[];tokens[p.uid]=100});
-  const game={type:"poker",order:ps.map(p=>p.uid),deck,initial,hands,tokens,ante:2,pot:0,round:1,maxRounds:5,phase:"discard",turnUid:ps[0].uid,discarded:{},bets:{},folded:{},currentBet:0,acted:{},winnerUid:null,message:"2장 중 버릴 카드를 선택",rev:0,lastActor:user.uid};
-  ps.forEach(p=>{game.tokens[p.uid]-=2;game.pot+=2});
-  await update(ref(db,"rooms/"+roomCode),{status:"playing",mode:"poker",game})
-}
-function pokerNext(g,uid){const i=g.order.indexOf(uid);return g.order[(i+1)%g.order.length]}
-function renderPoker(){
-  const g=roomData.game;show("pokerScreen");$("pokerInfo").textContent=`${g.round}/${g.maxRounds}R · 팟 ${g.pot} · 내 토큰 ${g.tokens?.[user.uid]??0}`;$("pokerPhase").textContent=g.phase==="discard"?"카드 선택":g.phase==="bet"?"베팅":"결과";
-  $("pokerPlayers").innerHTML=sortedPlayers().map(p=>`<div class="playerRow"><span>${escapeHtml(p.name)}</span><strong>${g.folded?.[p.uid]?"FOLD":(g.bets?.[p.uid]||0)+" / "+(g.tokens?.[p.uid]||0)}</strong></div>`).join("");
-  const mine=g.turnUid===user.uid;$("pokerActions").innerHTML="";
-  if(g.phase==="discard"){
-    $("pokerTitle").textContent=mine?"버릴 카드 선택":"상대 선택 중";const h=g.initial?.[user.uid]||[];$("pokerCards").innerHTML=h.map((c,i)=>cardHtml(c,mine,i)).join("");
-    if(mine)document.querySelectorAll("#pokerCards .card").forEach(el=>el.onclick=()=>pokerDiscard(Number(el.dataset.idx)))
-  }else if(g.phase==="bet"){
-    $("pokerTitle").textContent=mine?"베팅 차례":"상대 베팅 중";$("pokerCards").innerHTML=(g.hands?.[user.uid]||[]).map(c=>cardHtml(c)).join("");
-    const myBet=g.bets?.[user.uid]||0,toCall=Math.max(0,g.currentBet-myBet),tok=g.tokens?.[user.uid]||0;
-    if(mine){
-      $("pokerActions").innerHTML=`<button id="callBtn" class="primary">${toCall?`콜 +${toCall}`:"체크"}</button><button id="raiseBtn" class="secondary">레이즈 +10</button><button id="foldBtn" class="danger">폴드</button>`;
-      $("callBtn").onclick=()=>pokerBet("call");$("raiseBtn").onclick=()=>pokerBet("raise");$("foldBtn").onclick=()=>pokerBet("fold");$("raiseBtn").disabled=tok<toCall+10
+      setError(
+        "이미 게임이 시작된 방입니다."
+      );
+
+      return;
     }
-  }else{
-    $("pokerCards").innerHTML=(g.hands?.[user.uid]||[]).map(c=>cardHtml(c)).join("")
-  }
-}
-async function pokerDiscard(idx){
-  await secureGameTx(g=>{
-    if(!g||g.phase!=="discard"||g.turnUid!==user.uid)return g;const init=g.initial[user.uid],keep=init[1-idx];g.hands[user.uid]=[keep,g.deck.pop(),g.deck.pop(),g.deck.pop(),g.deck.pop()];g.discarded[user.uid]=true;
-    const next=g.order.find(id=>!g.discarded[id]);if(next)g.turnUid=next;else{g.phase="bet";g.bets={};g.acted={};g.order.forEach(id=>g.bets[id]=0);g.currentBet=0;g.turnUid=g.order[0]}return g
-  })
-}
-async function pokerBet(action){
-  await secureGameTx(g=>{
-    if(!g||g.phase!=="bet"||g.turnUid!==user.uid)return g;const b=g.bets[user.uid]||0,tok=g.tokens[user.uid]||0,toCall=Math.max(0,g.currentBet-b);
-    if(action==="fold"){g.folded[user.uid]=true;g.acted[user.uid]=true}
-    else if(action==="call"){const pay=Math.min(tok,toCall);g.tokens[user.uid]-=pay;g.bets[user.uid]+=pay;g.pot+=pay;g.acted[user.uid]=true}
-    else{const pay=Math.min(tok,toCall+10);g.tokens[user.uid]-=pay;g.bets[user.uid]+=pay;g.pot+=pay;g.currentBet=g.bets[user.uid];g.acted={};g.acted[user.uid]=true}
-    const active=g.order.filter(id=>!g.folded[id]);if(active.length===1){pokerAward(g,active);return g}
-    const settled=active.every(id=>g.acted[id]&&(g.bets[id]||0)===g.currentBet);
-    if(settled){const scores=active.map(id=>({id,s:pokerSimpleScore(g.hands[id])}));let best=scores[0].s;scores.forEach(x=>{if(cmpScore(x.s,best)>0)best=x.s});const wins=scores.filter(x=>cmpScore(x.s,best)===0).map(x=>x.id);pokerAward(g,wins);return g}
-    let n=pokerNext(g,user.uid);while(g.folded[n])n=pokerNext(g,n);g.turnUid=n;return g
-  })
-}
-function pokerAward(g,wins){
-  const share=Math.floor(g.pot/wins.length);wins.forEach(id=>g.tokens[id]+=share);g.lastWinners=wins;g.pot=0;
-  if(g.round>=g.maxRounds){let max=-1,win=null;g.order.forEach(id=>{if(g.tokens[id]>max){max=g.tokens[id];win=id}});g.winnerUid=win;return}
-  g.round++;g.phase="discard";g.initial={};g.hands={};g.discarded={};g.folded={};g.bets={};g.acted={};g.currentBet=0;g.deck=makePokerDeck();
-  g.order.forEach(id=>{g.initial[id]=[g.deck.pop(),g.deck.pop()];g.hands[id]=[];const pay=Math.min(2,g.tokens[id]);g.tokens[id]-=pay;g.pot+=pay});g.turnUid=g.order[0]
-}
 
+    const existing =
+      room.players || {};
 
-/* ---------- JOKER DRAW ---------- */
-function makeJokerDeck(){
-  const d=make52();
-  d.push({rank:"JOKER",suit:"★",red:false,joker:true,label:"조커"});
-  return shuffle(d)
-}
-function removeJokerPairs(hand){
-  const groups={};
-  hand.forEach((c,i)=>{
-    if(c.joker)return;
-    if(!groups[c.rank])groups[c.rank]=[];
-    groups[c.rank].push(i)
-  });
-  const removeSet=new Set();
-  Object.values(groups).forEach(arr=>{
-    const n=Math.floor(arr.length/2)*2;
-    for(let i=0;i<n;i++)removeSet.add(arr[i])
-  });
-  return hand.filter((_,i)=>!removeSet.has(i))
-}
-function jokerNext(g,from){
-  const o=g.order,idx=o.indexOf(from);
-  for(let s=1;s<=o.length;s++){
-    const id=o[(idx+s)%o.length];
-    if((g.hands[id]||[]).length>0)return id
-  }
-  return null
-}
-function jokerTarget(g,uid){
-  const o=g.order,idx=o.indexOf(uid);
-  for(let s=1;s<o.length;s++){
-    const id=o[(idx+s)%o.length];
-    if((g.hands[id]||[]).length>0)return id
-  }
-  return null
-}
-async function startJoker(ps){
-  const deck=makeJokerDeck(),hands={};
-  ps.forEach(p=>hands[p.uid]=[]);
-  let i=0;while(deck.length){hands[ps[i%ps.length].uid].push(deck.pop());i++}
-  Object.keys(hands).forEach(id=>hands[id]=shuffle(removeJokerPairs(hands[id])));
-  const g={type:"joker",order:ps.map(p=>p.uid),hands,turnUid:ps.find(p=>hands[p.uid].length>0)?.uid||ps[0].uid,winnerUid:null,loserUid:null,message:"상대 카드 한 장을 뽑으세요.",rev:0,lastActor:user.uid};
-  await update(ref(db,"rooms/"+roomCode),{status:"playing",mode:"joker",game:g})
-}
-function checkJokerEnd(g){
-  const withCards=g.order.filter(id=>(g.hands[id]||[]).length>0);
-  if(withCards.length<=1){
-    g.loserUid=withCards[0]||null;
-    const safe=g.order.filter(id=>id!==g.loserUid);
-    g.winnerUid=safe[0]||null;
-    return true
-  }
-  return false
-}
-function renderJoker(){
-  const g=roomData.game;show("jokerScreen");
-  const mine=g.turnUid===user.uid,h=g.hands?.[user.uid]||[];
-  $("jokerTurn").textContent=mine?"🟢 내 차례":`⏳ ${escapeHtml(roomData.players[g.turnUid]?.name||"상대")} 차례`;
-  $("jokerRoom").textContent="방 "+roomCode;
-  $("jokerCount").textContent=h.length+"장";
-  $("jokerMessage").textContent=g.message||"";
-  $("jokerPlayers").innerHTML=sortedPlayers().map(p=>`<div class="playerRow"><span>${escapeHtml(p.name)}</span><strong>${g.hands?.[p.uid]?.length||0}장</strong></div>`).join("");
-  $("jokerHand").innerHTML=h.map(c=>cardHtml(c)).join("");
+    const maxPlayers =
+      Math.max(
+        2,
+        Math.min(
+          6,
+          Number(
+            room.maxPlayers || 6
+          )
+        )
+      );
 
-  const targetId=jokerTarget(g,user.uid);
-  const targetHand=targetId?(g.hands[targetId]||[]):[];
-  $("jokerTargetTitle").textContent=targetId?`${escapeHtml(roomData.players[targetId]?.name||"상대")}의 카드에서 한 장을 뽑으세요.`:"대상 없음";
-  $("jokerTarget").innerHTML=mine?targetHand.map((_,i)=>`<div class="cardback" data-i="${i}">♠</div>`).join(""):"";
-  document.querySelectorAll("#jokerTarget .cardback").forEach(el=>el.onclick=()=>jokerTake(Number(el.dataset.i)));
-  $("jokerShuffleBtn").disabled=!mine
-}
-async function jokerTake(index){
-  await secureGameTx(g=>{
-    if(!g||g.turnUid!==user.uid||g.winnerUid)return g;
-    const targetId=jokerTarget(g,user.uid);if(!targetId)return g;
-    const th=(g.hands[targetId]||[]).slice();if(index<0||index>=th.length)return g;
-    const c=th.splice(index,1)[0];g.hands[targetId]=th;
-    const mh=(g.hands[user.uid]||[]).slice();mh.push(c);g.hands[user.uid]=removeJokerPairs(mh);
-    if(checkJokerEnd(g))return g;
-    g.turnUid=jokerNext(g,user.uid);g.message="상대 카드 한 장을 뽑으세요.";return g
-  })
-}
-async function jokerShuffle(){
-  await secureGameTx(g=>{
-    if(!g||g.turnUid!==user.uid)return g;
-    g.hands[user.uid]=shuffle((g.hands[user.uid]||[]).slice());return g
-  })
-}
+    if (
+      !existing[user.uid] &&
+      Object.keys(
+        existing
+      ).length >= maxPlayers
+    ) {
 
-/* ---------- DOUBT ---------- */
-async function startDoubt(ps){
-  const deck=make52(),hands={};ps.forEach(p=>hands[p.uid]=[]);let i=0;while(deck.length){hands[ps[i%ps.length].uid].push(deck.pop());i++}
-  const g={type:"doubt",order:ps.map(p=>p.uid),hands,pile:[],turnUid:ps[0].uid,lastPlay:null,pendingChallenge:true,winnerUid:null,message:"카드 1장을 골라 숫자를 선언하세요.",rev:0,lastActor:user.uid};
-  await update(ref(db,"rooms/"+roomCode),{status:"playing",mode:"doubt",game:g})
-}
-function renderDoubt(){
-  const g=roomData.game;show("doubtScreen");const mine=g.turnUid===user.uid,h=g.hands?.[user.uid]||[];$("doubtTurn").textContent=mine?"🟢 내 차례":`⏳ ${escapeHtml(roomData.players[g.turnUid]?.name||"상대")} 차례`;$("doubtCount").textContent=h.length+"장";$("doubtMessage").textContent=g.message||"";
-  $("doubtPlayers").innerHTML=sortedPlayers().map(p=>`<div class="playerRow"><span>${escapeHtml(p.name)}</span><strong>${g.hands?.[p.uid]?.length||0}장</strong></div>`).join("");
-  $("doubtCenter").innerHTML=g.lastPlay?`<b>${escapeHtml(roomData.players[g.lastPlay.uid]?.name||"플레이어")}</b> · "${g.lastPlay.claim}" 선언 · 중앙 ${g.pile.length}장`:`중앙 ${g.pile.length}장`;
-  $("doubtHand").innerHTML=h.map((c,i)=>cardHtml(c,mine&&!g.lastPlay,i)).join("");
-  $("doubtControls").innerHTML="";
-  if(mine&&!g.lastPlay){
-    document.querySelectorAll("#doubtHand .card").forEach(el=>el.onclick=()=>showClaimPicker(Number(el.dataset.idx)))
-  }else if(mine&&g.lastPlay&&g.lastPlay.uid!==user.uid){
-    $("doubtControls").innerHTML=`<div class="betrow"><button id="believeBtn" class="secondary">믿기</button><button id="doubtBtn" class="danger">다우트!</button></div>`;
-    $("believeBtn").onclick=()=>resolveDoubt(false);$("doubtBtn").onclick=()=>resolveDoubt(true)
-  }
-}
-function showClaimPicker(idx){
-  $("doubtControls").innerHTML=`<div class="muted">선언할 숫자/문자</div><div class="rankgrid">${RANKS.map(r=>`<button class="rankbtn" data-r="${r}">${r}</button>`).join("")}</div>`;
-  document.querySelectorAll(".rankbtn").forEach(b=>b.onclick=()=>submitDoubt(idx,b.dataset.r))
-}
-async function submitDoubt(idx,claim){
-  await secureGameTx(g=>{
-    if(!g||g.turnUid!==user.uid||g.lastPlay)return g;const h=(g.hands[user.uid]||[]).slice(),c=h[idx];if(!c)return g;h.splice(idx,1);g.hands[user.uid]=h;g.pile.push(c);g.lastPlay={uid:user.uid,claim,actual:c.rank};g.turnUid=pokerNext(g,user.uid);g.message=`${claim} 선언. 믿기 또는 다우트!`;return g
-  })
-}
-async function resolveDoubt(challenge){
-  await secureGameTx(g=>{
-    if(!g||!g.lastPlay||g.turnUid!==user.uid)return g;const lp=g.lastPlay;
-    if(challenge){
-      const liar=lp.actual!==lp.claim,loser=liar?lp.uid:user.uid;g.hands[loser]=(g.hands[loser]||[]).concat(g.pile);g.pile=[];g.lastPlay=null;g.turnUid=loser;g.message=liar?"거짓말 적발!":"진실이었다! 다우트 실패"
-    }else{
-      // 믿으면 다음 사람의 제출 차례
-      const prev=lp.uid;g.lastPlay=null;g.turnUid=user.uid;g.message="믿었습니다. 카드를 내세요."
-      if((g.hands[prev]||[]).length===0){g.winnerUid=prev}
+      setError(
+        "방이 가득 찼습니다."
+      );
+
+      return;
     }
-    return g
-  })
-}
 
-/* ---------- RESULT ---------- */
-function renderResult(){
-  const g=roomData.game;if(!g?.winnerUid)return;
-  show("resultScreen");const w=roomData.players?.[g.winnerUid];
-  if(g.type==="joker"&&g.loserUid){
-    const loser=roomData.players?.[g.loserUid];
-    $("winnerLabel").textContent=loser?`🃏 ${escapeHtml(loser.name)} 패배!`:"게임 종료";
-  }else{
-    $("winnerLabel").textContent=w?`🏆 ${escapeHtml(w.name)} 승리!`:"게임 종료";
+    if (
+      !existing[user.uid]
+    ) {
+
+      const seats =
+        Object.values(
+          existing
+        ).map(
+          player =>
+            player.seat
+        );
+
+      let seat = 0;
+
+      while (
+        seats.includes(seat)
+      ) {
+        seat++;
+      }
+
+      if (
+        seat > 5
+      ) {
+
+        setError(
+          "사용 가능한 좌석이 없습니다."
+        );
+
+        return;
+      }
+
+      await set(
+        ref(
+          db,
+          `rooms/${code}/players/${user.uid}`
+        ),
+
+        {
+          name,
+          ready: false,
+          seat,
+          joinedAt:
+            Date.now()
+        }
+      );
+    }
+
+    enterRoom(code);
+
+  } catch (error) {
+
+    console.error(error);
+
+    setError(
+      "방 참가 실패: " +
+      (
+        error.message ||
+        error.code
+      )
+    );
   }
-  $("resultPlayers").innerHTML=sortedPlayers().map(p=>`<div class="playerRow ${p.uid===g.winnerUid?"me":""}"><span>${escapeHtml(p.name)}</span><strong>${p.uid===g.winnerUid?"🏆":""}</strong></div>`).join("")
-}
-async function backLobby(){
-  if(roomData.hostUid===user.uid){const ups={status:"lobby",game:null};Object.keys(roomData.players||{}).forEach(id=>ups[`players/${id}/ready`]=false);await update(ref(db,"rooms/"+roomCode),ups)}else show("lobbyScreen")
-}
-async function leaveRoom(){
-  if(!roomCode||!user){show("homeScreen");return}
-  const code=roomCode,host=roomData?.hostUid===user.uid;await remove(ref(db,`rooms/${code}/players/${user.uid}`));
-  if(host){const others=sortedPlayers().filter(p=>p.uid!==user.uid);if(others.length)await update(ref(db,`rooms/${code}`),{hostUid:others[0].uid,status:"lobby",game:null});else await remove(ref(db,`rooms/${code}`))}
-  if(roomUnsub){roomUnsub();roomUnsub=null}roomCode=null;roomData=null;pendingSeven=false;show("homeScreen")
 }
 
-/* ---------- EVENTS ---------- */
-$("googleLoginBtn").onclick=googleLogin;$("googleLogoutBtn").onclick=switchToGuest;
-$("createRoomBtn").onclick=createRoom;$("joinRoomBtn").onclick=joinRoom;$("readyBtn").onclick=toggleReady;$("startOnlineBtn").onclick=startOnline;
-$("leaveRoomBtn").onclick=leaveRoom;$("leaveGameBtn").onclick=leaveRoom;$("pokerLeaveBtn").onclick=leaveRoom;$("jokerLeaveBtn").onclick=leaveRoom;$("doubtLeaveBtn").onclick=leaveRoom;$("resultLeaveBtn").onclick=leaveRoom;$("backLobbyBtn").onclick=backLobby;
-$("ocDrawBtn").onclick=ocDraw;
-document.querySelectorAll(".suitBtn").forEach(b=>b.onclick=()=>chooseSuit(b.dataset.suit));
-document.querySelectorAll(".modebtn").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
-$("copyRoomBtn").onclick=async()=>{try{await navigator.clipboard.writeText(roomCode);$("copyRoomBtn").textContent="✓";setTimeout(()=>$("copyRoomBtn").textContent="복사",700)}catch(e){prompt("방 코드",roomCode)}};
-$("roomCodeInput").addEventListener("input",e=>e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,6));
+/* =========================================================
+   방 입장
+========================================================= */
+
+async function enterRoom(code) {
+
+  roomCode =
+    code;
+
+  if (
+    $("roomCodeLabel")
+  ) {
+    $("roomCodeLabel")
+      .textContent =
+        code;
+  }
+
+  if (
+    $("gameRoomLabel")
+  ) {
+    $("gameRoomLabel")
+      .textContent =
+        "방 " + code;
+  }
+
+  if (
+    $("doubtRoom")
+  ) {
+    $("doubtRoom")
+      .textContent =
+        "방 " + code;
+  }
+
+  if (roomUnsub) {
+    roomUnsub();
+  }
+
+  const playerRef =
+    ref(
+      db,
+      `rooms/${code}/players/${user.uid}`
+    );
+
+  try {
+
+    onDisconnect(
+      playerRef
+    ).remove();
+
+  } catch (error) {
+
+    console.warn(
+      "onDisconnect 실패",
+      error
+    );
+  }
+
+  roomUnsub =
+    onValue(
+      ref(
+        db,
+        `rooms/${code}`
+      ),
+
+      snapshot => {
+
+        if (
+          !snapshot.exists()
+        ) {
+
+          roomData =
+            null;
+
+          roomCode =
+            null;
+
+          show(
+            "homeScreen"
+          );
+
+          setError(
+            "방이 종료되었습니다."
+          );
+
+          return;
+        }
+
+        const incoming =
+          snapshot.val();
+
+        if (
+          !validateRoomSnapshot(
+            incoming
+          )
+        ) {
+
+          antiCheatFail(
+            "invalid room snapshot"
+          );
+
+          return;
+        }
+
+        roomData =
+          incoming;
+
+        renderRoom();
+      }
+    );
+
+  show(
+    "lobbyScreen"
+  );
+}
+
+function sortedPlayers() {
+
+  if (
+    !roomData?.players
+  ) {
+    return [];
+  }
+
+  return Object.entries(
+    roomData.players
+  )
+    .map(
+      ([uid, player]) => ({
+        uid,
+        ...player
+      })
+    )
+    .sort(
+      (a, b) =>
+        (a.seat ?? 99) -
+        (b.seat ?? 99)
+    );
+}
+
+/* =========================================================
+   로비
+========================================================= */
+
+async function toggleReady() {
+
+  const me =
+    roomData?.players?.[
+      user?.uid
+    ];
+
+  if (!me) return;
+
+  try {
+
+    await update(
+      ref(
+        db,
+        `rooms/${roomCode}/players/${user.uid}`
+      ),
+
+      {
+        ready:
+          !me.ready
+      }
+    );
+
+  } catch (error) {
+
+    console.error(error);
+
+    setError(
+      "준비 상태 변경 실패"
+    );
+  }
+}
+
+async function setMode(mode) {
+
+  if (
+    roomData?.hostUid !==
+    user?.uid
+  ) {
+    return;
+  }
+
+  if (
+    !AC_VALID_MODES.has(
+      mode
+    )
+  ) {
+
+    antiCheatFail(
+      "invalid mode"
+    );
+
+    return;
+  }
+
+  try {
+
+    await update(
+      ref(
+        db,
+        `rooms/${roomCode}`
+      ),
+
+      {
+        mode
+      }
+    );
+
+  } catch (error) {
+
+    console.error(error);
+
+    setError(
+      "모드 변경 실패"
+    );
+  }
+}
+
+async function setMaxPlayers(
+  count
+) {
+
+  if (
+    roomData?.hostUid !==
+    user?.uid
+  ) {
+    return;
+  }
+
+  const max =
+    Number(count);
+
+  if (
+    !Number.isInteger(max) ||
+    max < 2 ||
+    max > 6
+  ) {
+
+    antiCheatFail(
+      "invalid maxPlayers"
+    );
+
+    return;
+  }
+
+  const currentCount =
+    sortedPlayers().length;
+
+  if (
+    max < currentCount
+  ) {
+
+    const help =
+      $("maxPlayerHelp");
+
+    if (help) {
+
+      help.textContent =
+        "현재 참가 인원보다 낮게 설정할 수 없습니다.";
+    }
+
+    return;
+  }
+
+  try {
+
+    await update(
+      ref(
+        db,
+        `rooms/${roomCode}`
+      ),
+
+      {
+        maxPlayers:
+          max
+      }
+    );
+
+  } catch (error) {
+
+    console.error(error);
+  }
+}
+
+function renderRoom() {
+
+  const players =
+    sortedPlayers();
+
+  if (
+    players.length === 0
+  ) {
+    return;
+  }
+
+  if (
+    roomData.status ===
+    "lobby"
+  ) {
+
+    show(
+      "lobbyScreen"
+    );
+
+    if (
+      $("playerList")
+    ) {
+
+      $("playerList")
+        .innerHTML =
+          players
+            .map(
+              player => `
+                <div
+                  class="playerRow ${
+                    player.uid ===
+                    user.uid
+                      ? "me"
+                      : ""
+                  }"
+                >
+                  <div
+                    class="playerName"
+                  >
+                    ${
+                      escapeHtml(
+                        player.name
+                      )
+                    }
+
+                    ${
+                      player.uid ===
+                      roomData.hostUid
+                        ? "👑"
+                        : ""
+                    }
+                  </div>
+
+                  <strong>
+                    ${
+                      player.ready
+                        ? "✅"
+                        : "⏳"
+                    }
+                  </strong>
+                </div>
+              `
+            )
+            .join("");
+    }
+
+    const me =
+      roomData.players[
+        user.uid
+      ];
+
+    if (
+      $("readyBtn")
+    ) {
+
+      $("readyBtn")
+        .textContent =
+          me?.ready
+            ? "준비 취소"
+            : "준비";
+    }
+
+    selectedMode =
+      roomData.mode ||
+      "onecard";
+
+    document
+      .querySelectorAll(
+        ".modebtn"
+      )
+      .forEach(
+        button => {
+
+          button.classList.toggle(
+            "selected",
+            button.dataset.mode ===
+              selectedMode
+          );
+
+          button.disabled =
+            roomData.hostUid !==
+            user.uid;
+        }
+      );
+
+    const maxPlayers =
+      Math.max(
+        2,
+        Math.min(
+          6,
+          Number(
+            roomData.maxPlayers || 6
+          )
+        )
+      );
+
+    document
+      .querySelectorAll(
+        ".maxpbtn"
+      )
+      .forEach(
+        button => {
+
+          button.classList.toggle(
+            "selected",
+            Number(
+              button.dataset.maxp
+            ) === maxPlayers
+          );
+
+          button.disabled =
+            roomData.hostUid !==
+            user.uid;
+        }
+      );
+
+    if (
+      $("modeHelp")
+    ) {
+
+      $("modeHelp")
+        .textContent =
+          `현재 모드: ${modeLabel(selectedMode)} · 방장만 변경 가능`;
+    }
+
+    if (
+      $("maxPlayerHelp")
+    ) {
+
+      $("maxPlayerHelp")
+        .textContent =
+          `현재 ${players.length}/${maxPlayers}명`;
+    }
+
+    const isHost =
+      roomData.hostUid ===
+      user.uid;
+
+    if (
+      $("startOnlineBtn")
+    ) {
+
+      $("startOnlineBtn")
+        .style.display =
+          isHost
+            ? "block"
+            : "none";
+
+      $("startOnlineBtn")
+        .disabled =
+          !(
+            players.length >= 2 &&
+            players.length <=
+              maxPlayers &&
+            players.every(
+              player =>
+                player.ready
+            )
+          );
+    }
+
+    return;
+  }
+
+  if (
+    roomData.status ===
+    "playing"
+  ) {
+
+    if (
+      roomData.mode ===
+      "onecard"
+    ) {
+
+      renderOneCard();
+
+    } else if (
+      roomData.mode ===
+      "poker"
+    ) {
+
+      renderPoker();
+
+    } else if (
+      roomData.mode ===
+      "joker"
+    ) {
+
+      renderJoker();
+
+    } else {
+
+      renderDoubt();
+    }
+
+    return;
+  }
+
+  if (
+    roomData.status ===
+    "finished"
+  ) {
+
+    renderResult();
+  }
+}
+
+/* =========================================================
+   게임 시작
+========================================================= */
+
+async function startOnline() {
+
+  if (
+    roomData?.hostUid !==
+    user?.uid
+  ) {
+    return;
+  }
+
+  if (
+    roomData.status !==
+    "lobby"
+  ) {
+
+    antiCheatFail(
+      "start outside lobby"
+    );
+
+    return;
+  }
+
+  const players =
+    sortedPlayers();
+
+  const maxPlayers =
+    Math.max(
+      2,
+      Math.min(
+        6,
+        Number(
+          roomData.maxPlayers || 6
+        )
+      )
+    );
+
+  if (
+    players.length < 2 ||
+    players.length >
+      maxPlayers ||
+    players.length > 6 ||
+    !players.every(
+      player =>
+        player.ready
+    )
+  ) {
+    return;
+  }
+
+  try {
+
+    if (
+      roomData.mode ===
+      "onecard"
+    ) {
+
+      await startOneCard(
+        players
+      );
+
+    } else if (
+      roomData.mode ===
+      "poker"
+    ) {
+
+      await startPoker(
+        players
+      );
+
+    } else if (
+      roomData.mode ===
+      "joker"
+    ) {
+
+      await startJoker(
+        players
+      );
+
+    } else {
+
+      await startDoubt(
+        players
+      );
+    }
+
+  } catch (error) {
+
+    console.error(error);
+
+    setError(
+      "게임 시작 실패: " +
+      (
+        error.message ||
+        error.code
+      )
+    );
+  }
+}
+
+/* =========================================================
+   원카드
+========================================================= */
+
+function attackValue(card) {
+
+  if (!card) {
+    return 0;
+  }
+
+  if (card.joker) {
+
+    return (
+      card.jokerType ===
+      "color"
+    )
+      ? 7
+      : 5;
+  }
+
+  if (
+    card.rank === "A" &&
+    card.suit === "♠"
+  ) {
+    return 5;
+  }
+
+  if (
+    card.rank === "A"
+  ) {
+    return 3;
+  }
+
+  if (
+    card.rank === "2"
+  ) {
+    return 2;
+  }
+
+  return 0;
+}
+
+function nextUid(
+  game,
+  from,
+  steps = 1
+) {
+
+  const order =
+    game.order;
+
+  let index =
+    order.indexOf(from);
+
+  if (
+    index < 0
+  ) {
+    return order[0];
+  }
+
+  let moved = 0;
+
+  let guard = 0;
+
+  while (
+    moved < steps &&
+    guard < 100
+  ) {
+
+    guard++;
+
+    index =
+      (
+        index +
+        game.direction +
+        order.length
+      ) %
+      order.length;
+
+    const id =
+      order[index];
+
+    if (
+      !game.eliminated?.[id]
+    ) {
+      moved++;
+    }
+  }
+
+  return order[index];
+}
+
+function canPlay(
+  game,
+  card
+) {
+
+  const top =
+    game.topCard;
+
+  if (!top) {
+    return true;
+  }
+
+  if (
+    game.extraChain
+  ) {
+
+    if (card.joker) {
+      return true;
+    }
+
+    if (
+      game.chosenSuit
+    ) {
+
+      return (
+        card.suit ===
+          game.chosenSuit ||
+        card.rank === "7"
+      );
+    }
+
+    return (
+      card.suit ===
+        top.suit ||
+      card.rank ===
+        top.rank
+    );
+  }
+
+  if (
+    game.pendingDraw > 0
+  ) {
+
+    if (
+      top.rank === "2" &&
+      !top.joker
+    ) {
+
+      if (
+        card.rank === "3" &&
+        card.suit ===
+          top.suit
+      ) {
+        return true;
+      }
+
+      return (
+        card.rank === "2"
+      );
+    }
+
+    if (
+      top.rank === "A" &&
+      top.suit === "♠" &&
+      !top.joker
+    ) {
+
+      return !!card.joker;
+    }
+
+    if (
+      top.rank === "A" &&
+      !top.joker
+    ) {
+
+      return (
+        card.rank === "A"
+      );
+    }
+
+    if (
+      top.joker &&
+      top.jokerType ===
+        "black"
+    ) {
+
+      return (
+        (
+          card.rank === "A" &&
+          card.suit === "♠"
+        ) ||
+        (
+          card.joker &&
+          card.jokerType ===
+            "color"
+        )
+      );
+    }
+
+    return false;
+  }
+
+  if (card.joker) {
+    return true;
+  }
+
+  if (
+    game.chosenSuit
+  ) {
+
+    return (
+      card.suit ===
+        game.chosenSuit ||
+      card.rank === "7"
+    );
+  }
+
+  if (top.joker) {
+
+    return (
+      card.joker ||
+      attackValue(card) > 0
+    );
+  }
+
+  return (
+    card.suit ===
+      top.suit ||
+    card.rank ===
+      top.rank
+  );
+}
+
+function drawState(
+  game,
+  count
+) {
+
+  const result = [];
+
+  for (
+    let i = 0;
+    i < count;
+    i++
+  ) {
+
+    if (
+      game.deck.length === 0
+    ) {
+
+      if (
+        game.discard.length <= 1
+      ) {
+        break;
+      }
+
+      const top =
+        game.discard.pop();
+
+      game.deck =
+        shuffle(
+          game.discard
+        );
+
+      game.discard =
+        [top];
+    }
+
+    if (
+      game.deck.length
+    ) {
+
+      result.push(
+        game.deck.pop()
+      );
+    }
+  }
+
+  return result;
+}
+
+async function startOneCard(
+  players
+) {
+
+  const deck =
+    makeOneCardDeck();
+
+  const hands = {};
+
+  players.forEach(
+    player => {
+      hands[player.uid] = [];
+    }
+  );
+
+  for (
+    let round = 0;
+    round < 7;
+    round++
+  ) {
+
+    players.forEach(
+      player => {
+
+        if (
+          deck.length
+        ) {
+
+          hands[
+            player.uid
+          ].push(
+            deck.pop()
+          );
+        }
+      }
+    );
+  }
+
+  let starterIndex =
+    deck.findIndex(
+      card =>
+        !card.joker &&
+        ![
+          "A",
+          "2",
+          "J",
+          "Q",
+          "K",
+          "7"
+        ].includes(
+          card.rank
+        )
+    );
+
+  if (
+    starterIndex < 0
+  ) {
+    starterIndex = 0;
+  }
+
+  const starter =
+    deck.splice(
+      starterIndex,
+      1
+    )[0];
+
+  const game = {
+
+    type:
+      "onecard",
+
+    order:
+      players.map(
+        player =>
+          player.uid
+      ),
+
+    turnUid:
+      players[0].uid,
+
+    direction:
+      1,
+
+    pendingDraw:
+      0,
+
+    chosenSuit:
+      null,
+
+    extraChain:
+      false,
+
+    deck,
+
+    discard:
+      [starter],
+
+    topCard:
+      starter,
+
+    hands,
+
+    eliminated:
+      {},
+
+    winnerUid:
+      null,
+
+    message:
+      "게임 시작",
+
+    rev:
+      0,
+
+    lastActor:
+      user.uid
+  };
+
+  await update(
+    ref(
+      db,
+      `rooms/${roomCode}`
+    ),
+
+    {
+      status:
+        "playing",
+
+      mode:
+        "onecard",
+
+      game
+    }
+  );
+}
+
+function renderOneCard() {
+
+  const game =
+    roomData.game;
+
+  show(
+    "onecardScreen"
+  );
+
+  const players =
+    sortedPlayers();
+
+  const hand =
+    game.hands?.[
+      user.uid
+    ] || [];
+
+  const myTurn =
+    game.turnUid ===
+    user.uid;
+
+  if (
+    $("ocTurnLabel")
+  ) {
+
+    $("ocTurnLabel")
+      .textContent =
+        myTurn
+          ? "🟢 내 차례"
+          : `⏳ ${
+              escapeHtml(
+                roomData.players[
+                  game.turnUid
+                ]?.name ||
+                "상대"
+              )
+            } 차례`;
+  }
+
+  if (
+    $("ocTopCard")
+  ) {
+
+    $("ocTopCard")
+      .innerHTML =
+        cardHtml(
+          game.topCard
+        );
+  }
+
+  if (
+    $("ocChosenSuit")
+  ) {
+
+    $("ocChosenSuit")
+      .textContent =
+        game.chosenSuit
+          ? `지정: ${game.chosenSuit}`
+          : "";
+  }
+
+  if (
+    $("ocAttackInfo")
+  ) {
+
+    $("ocAttackInfo")
+      .textContent =
+        game.pendingDraw
+          ? `공격 +${game.pendingDraw}`
+          : "";
+  }
+
+  if (
+    $("ocMessage")
+  ) {
+
+    $("ocMessage")
+      .textContent =
+        game.message || "";
+  }
+
+  if (
+    $("ocMyCount")
+  ) {
+
+    $("ocMyCount")
+      .textContent =
+        `${hand.length}장`;
+  }
+
+  const drawBtn =
+    $("ocDrawBtn");
+
+  if (drawBtn) {
+    drawBtn.disabled =
+      !myTurn;
+  }
+
+  if (
+    $("ocOpponents")
+  ) {
+
+    $("ocOpponents")
+      .innerHTML =
+        players
+          .filter(
+            player =>
+              player.uid !==
+              user.uid
+          )
+          .map(
+            player => {
+
+              const count =
+                game.hands?.[
+                  player.uid
+                ]?.length ?? 0;
+
+              return `
+                <div
+                  class="opponent ${
+                    count <= 2
+                      ? "danger"
+                      : ""
+                  }"
+                >
+                  <strong>
+                    ${
+                      escapeHtml(
+                        player.name
+                      )
+                    }
+                  </strong>
+
+                  <br>
+
+                  ${count}장
+                </div>
+              `;
+            }
+          )
+          .join("");
+  }
+
+  if (
+    $("ocHand")
+  ) {
+
+    $("ocHand")
+      .innerHTML =
+        hand
+          .map(
+            (card, index) =>
+              cardHtml(
+                card,
+                myTurn &&
+                canPlay(
+                  game,
+                  card
+                ),
+                index
+              )
+          )
+          .join("");
+
+    document
+      .querySelectorAll(
+        "#ocHand .card"
+      )
+      .forEach(
+        element => {
+
+          element.onclick =
+            () => {
+
+              if (
+                myTurn &&
+                element.classList.contains(
+                  "playable"
+                )
+              ) {
+
+                playOneCard(
+                  Number(
+                    element.dataset.idx
+                  )
+                );
+              }
+            };
+        }
+      );
+  }
+
+  if (
+    pendingSeven &&
+    myTurn
+  ) {
+    show(
+      "suitScreen"
+    );
+  }
+}
+
+async function playOneCard(
+  index
+) {
+
+  let needSuit =
+    false;
+
+  const transaction =
+    await secureGameTx(
+      game => {
+
+        if (
+          !game ||
+          game.winnerUid ||
+          game.turnUid !==
+            user.uid
+        ) {
+          return game;
+        }
+
+        const hand =
+          (
+            game.hands?.[
+              user.uid
+            ] || []
+          ).slice();
+
+        const card =
+          hand[index];
+
+        if (
+          !card ||
+          !canPlay(
+            game,
+            card
+          )
+        ) {
+          return game;
+        }
+
+        const topBefore =
+          game.topCard;
+
+        const blockTwo =
+          game.pendingDraw > 0 &&
+          topBefore?.rank === "2" &&
+          card.rank === "3" &&
+          card.suit ===
+            topBefore.suit;
+
+        hand.splice(
+          index,
+          1
+        );
+
+        game.hands[
+          user.uid
+        ] = hand;
+
+        game.discard.push(
+          card
+        );
+
+        game.topCard =
+          card;
+
+        if (blockTwo) {
+
+          game.pendingDraw =
+            0;
+
+        } else {
+
+          const attack =
+            attackValue(card);
+
+          if (attack) {
+
+            game.pendingDraw =
+              (
+                game.pendingDraw ||
+                0
+              ) +
+              attack;
+          }
+        }
+
+        game.chosenSuit =
+          null;
+
+        if (
+          hand.length === 0
+        ) {
+
+          game.winnerUid =
+            user.uid;
+
+          return game;
+        }
+
+        if (
+          card.rank === "7"
+        ) {
+
+          game.waitingSuitUid =
+            user.uid;
+
+          needSuit =
+            true;
+
+          return game;
+        }
+
+        const playerCount =
+          game.order.length;
+
+        let extra =
+          false;
+
+        let skip =
+          false;
+
+        if (
+          card.rank === "K"
+        ) {
+
+          extra =
+            true;
+
+        } else if (
+          card.rank === "J" &&
+          playerCount <= 2
+        ) {
+
+          extra =
+            true;
+
+        } else if (
+          card.rank === "J"
+        ) {
+
+          skip =
+            true;
+
+        } else if (
+          card.rank === "Q"
+        ) {
+
+          /* 2인 Q 버그 수정 */
+          game.direction *= -1;
+        }
+
+        if (extra) {
+
+          game.extraChain =
+            true;
+
+          game.turnUid =
+            user.uid;
+
+        } else {
+
+          game.extraChain =
+            false;
+
+          game.turnUid =
+            nextUid(
+              game,
+              user.uid,
+              skip
+                ? 2
+                : 1
+            );
+        }
+
+        return game;
+      }
+    );
+
+  if (
+    transaction?.committed &&
+    needSuit
+  ) {
+
+    pendingSeven =
+      true;
+
+    show(
+      "suitScreen"
+    );
+  }
+}
+
+async function chooseSuit(
+  suit
+) {
+
+  const transaction =
+    await secureGameTx(
+      game => {
+
+        if (
+          !game ||
+          game.waitingSuitUid !==
+            user.uid
+        ) {
+          return game;
+        }
+
+        game.chosenSuit =
+          suit;
+
+        game.waitingSuitUid =
+          null;
+
+        game.extraChain =
+          false;
+
+        game.turnUid =
+          nextUid(
+            game,
+            user.uid,
+            1
+          );
+
+        return game;
+      }
+    );
+
+  if (
+    transaction?.committed
+  ) {
+
+    pendingSeven =
+      false;
+
+    show(
+      "onecardScreen"
+    );
+  }
+}
+
+async function ocDraw() {
+
+  await secureGameTx(
+    game => {
+
+      if (
+        !game ||
+        game.turnUid !==
+          user.uid ||
+        game.waitingSuitUid
+      ) {
+        return game;
+      }
+
+      if (
+        game.extraChain
+      ) {
+
+        game.extraChain =
+          false;
+
+        game.turnUid =
+          nextUid(
+            game,
+            user.uid,
+            1
+          );
+
+        return game;
+      }
+
+      const hand =
+        (
+          game.hands?.[
+            user.uid
+          ] || []
+        ).slice();
+
+      const amount =
+        game.pendingDraw ||
+        1;
+
+      hand.push(
+        ...drawState(
+          game,
+          amount
+        )
+      );
+
+      game.hands[
+        user.uid
+      ] = hand;
+
+      game.pendingDraw =
+        0;
+
+      game.chosenSuit =
+        null;
+
+      if (
+        hand.length > 20
+      ) {
+
+        game.eliminated =
+          game.eliminated ||
+          {};
+
+        game.eliminated[
+          user.uid
+        ] = true;
+
+        const alive =
+          game.order.filter(
+            id =>
+              !game.eliminated[
+                id
+              ]
+          );
+
+        if (
+          alive.length === 1
+        ) {
+
+          game.winnerUid =
+            alive[0];
+
+        } else {
+
+          game.turnUid =
+            nextUid(
+              game,
+              user.uid,
+              1
+            );
+        }
+
+        return game;
+      }
+
+      game.turnUid =
+        nextUid(
+          game,
+          user.uid,
+          1
+        );
+
+      return game;
+    }
+  );
+}
+
+/* =========================================================
+   포커
+========================================================= */
+
+const PV = {
+  A: 14,
+  K: 13,
+  Q: 12,
+  J: 11,
+  "10": 10,
+  "9": 9,
+  "8": 8,
+  "7": 7,
+  "6": 6,
+  "5": 5,
+  "4": 4,
+  "3": 3,
+  "2": 2
+};
+
+function pokerSimpleScore(
+  hand
+) {
+
+  const jokers =
+    hand.filter(
+      card =>
+        card.joker
+    ).length;
+
+  const base =
+    hand.filter(
+      card =>
+        !card.joker
+    );
+
+  if (
+    jokers === 0
+  ) {
+    return eval5(base);
+  }
+
+  const choices = [];
+
+  for (const suit of SUITS) {
+
+    for (const rank of RANKS) {
+
+      choices.push({
+        rank,
+        suit: suit.s,
+        red: suit.red,
+        joker: false
+      });
+    }
+  }
+
+  let best =
+    null;
+
+  function recurse(
+    current,
+    remaining
+  ) {
+
+    if (
+      remaining === 0
+    ) {
+
+      const score =
+        eval5(current);
+
+      if (
+        !best ||
+        cmpScore(
+          score,
+          best
+        ) > 0
+      ) {
+
+        best =
+          score;
+      }
+
+      return;
+    }
+
+    for (
+      const choice of choices
+    ) {
+
+      recurse(
+        current.concat(
+          [choice]
+        ),
+        remaining - 1
+      );
+    }
+  }
+
+  recurse(
+    base,
+    jokers
+  );
+
+  return best;
+}
+
+function eval5(hand) {
+
+  const values =
+    hand
+      .map(
+        card =>
+          PV[card.rank]
+      )
+      .sort(
+        (a, b) =>
+          b - a
+      );
+
+  const counts = {};
+
+  values.forEach(
+    value => {
+
+      counts[value] =
+        (
+          counts[value] ||
+          0
+        ) + 1;
+    }
+  );
+
+  const groups =
+    Object.entries(
+      counts
+    )
+      .map(
+        ([value, count]) => ({
+          v: Number(value),
+          n: count
+        })
+      )
+      .sort(
+        (a, b) =>
+          b.n - a.n ||
+          b.v - a.v
+      );
+
+  const flush =
+    hand.every(
+      card =>
+        card.suit ===
+        hand[0].suit
+    );
+
+  let unique =
+    [...new Set(values)];
+
+  if (
+    unique.includes(14)
+  ) {
+    unique.push(1);
+  }
+
+  unique.sort(
+    (a, b) =>
+      b - a
+  );
+
+  let straightHigh =
+    0;
+
+  for (
+    let i = 0;
+    i <=
+      unique.length - 5;
+    i++
+  ) {
+
+    if (
+      unique[i] -
+        unique[i + 4] ===
+      4
+    ) {
+
+      straightHigh =
+        unique[i];
+
+      break;
+    }
+  }
+
+  if (
+    flush &&
+    straightHigh
+  ) {
+
+    return {
+      cat: 8,
+      tie: [straightHigh],
+      name:
+        "스트레이트 플러시"
+    };
+  }
+
+  if (
+    groups[0]?.n === 4
+  ) {
+
+    return {
+      cat: 7,
+      tie: [
+        groups[0].v,
+        groups[1].v
+      ],
+      name:
+        "포카드"
+    };
+  }
+
+  if (
+    groups[0]?.n === 3 &&
+    groups[1]?.n === 2
+  ) {
+
+    return {
+      cat: 6,
+      tie: [
+        groups[0].v,
+        groups[1].v
+      ],
+      name:
+        "풀하우스"
+    };
+  }
+
+  if (flush) {
+
+    return {
+      cat: 5,
+      tie: values,
+      name:
+        "플러시"
+    };
+  }
+
+  if (
+    straightHigh
+  ) {
+
+    return {
+      cat: 4,
+      tie: [straightHigh],
+      name:
+        "스트레이트"
+    };
+  }
+
+  if (
+    groups[0]?.n === 3
+  ) {
+
+    return {
+      cat: 3,
+      tie: [
+        groups[0].v,
+        ...groups
+          .slice(1)
+          .map(
+            group =>
+              group.v
+          )
+      ],
+      name:
+        "트리플"
+    };
+  }
+
+  if (
+    groups[0]?.n === 2 &&
+    groups[1]?.n === 2
+  ) {
+
+    return {
+      cat: 2,
+      tie: [
+        Math.max(
+          groups[0].v,
+          groups[1].v
+        ),
+        Math.min(
+          groups[0].v,
+          groups[1].v
+        ),
+        groups[2].v
+      ],
+      name:
+        "투페어"
+    };
+  }
+
+  if (
+    groups[0]?.n === 2
+  ) {
+
+    return {
+      cat: 1,
+      tie: [
+        groups[0].v,
+        ...groups
+          .slice(1)
+          .map(
+            group =>
+              group.v
+          )
+      ],
+      name:
+        "원페어"
+    };
+  }
+
+  return {
+    cat: 0,
+    tie: values,
+    name:
+      "하이카드"
+  };
+}
+
+function cmpScore(
+  a,
+  b
+) {
+
+  if (
+    a.cat !== b.cat
+  ) {
+
+    return (
+      a.cat -
+      b.cat
+    );
+  }
+
+  const length =
+    Math.max(
+      a.tie.length,
+      b.tie.length
+    );
+
+  for (
+    let i = 0;
+    i < length;
+    i++
+  ) {
+
+    const difference =
+      (a.tie[i] || 0) -
+      (b.tie[i] || 0);
+
+    if (difference) {
+      return difference;
+    }
+  }
+
+  return 0;
+}
+
+async function startPoker(
+  players
+) {
+
+  const deck =
+    makePokerDeck();
+
+  const hands = {};
+  const initial = {};
+  const tokens = {};
+
+  players.forEach(
+    player => {
+
+      initial[player.uid] =
+        [
+          deck.pop(),
+          deck.pop()
+        ];
+
+      hands[player.uid] =
+        [];
+
+      tokens[player.uid] =
+        100;
+    }
+  );
+
+  const game = {
+
+    type:
+      "poker",
+
+    order:
+      players.map(
+        player =>
+          player.uid
+      ),
+
+    deck,
+
+    initial,
+
+    hands,
+
+    tokens,
+
+    ante:
+      2,
+
+    pot:
+      0,
+
+    round:
+      1,
+
+    maxRounds:
+      5,
+
+    phase:
+      "discard",
+
+    turnUid:
+      players[0].uid,
+
+    discarded:
+      {},
+
+    bets:
+      {},
+
+    folded:
+      {},
+
+    currentBet:
+      0,
+
+    acted:
+      {},
+
+    winnerUid:
+      null,
+
+    message:
+      "2장 중 버릴 카드를 선택",
+
+    rev:
+      0,
+
+    lastActor:
+      user.uid
+  };
+
+  players.forEach(
+    player => {
+
+      game.tokens[
+        player.uid
+      ] -= 2;
+
+      game.pot += 2;
+    }
+  );
+
+  await update(
+    ref(
+      db,
+      `rooms/${roomCode}`
+    ),
+
+    {
+      status:
+        "playing",
+
+      mode:
+        "poker",
+
+      game
+    }
+  );
+}
+
+function pokerNext(
+  game,
+  uid
+) {
+
+  const index =
+    game.order.indexOf(
+      uid
+    );
+
+  return game.order[
+    (
+      index + 1
+    ) %
+    game.order.length
+  ];
+}
+
+function renderPoker() {
+
+  const game =
+    roomData.game;
+
+  show(
+    "pokerScreen"
+  );
+
+  if (
+    $("pokerInfo")
+  ) {
+
+    $("pokerInfo")
+      .textContent =
+        `${game.round}/${game.maxRounds}R · 팟 ${game.pot} · 내 토큰 ${
+          game.tokens?.[
+            user.uid
+          ] ?? 0
+        }`;
+  }
+
+  if (
+    $("pokerPhase")
+  ) {
+
+    $("pokerPhase")
+      .textContent =
+        game.phase ===
+          "discard"
+          ? "카드 선택"
+          : game.phase ===
+            "bet"
+            ? "베팅"
+            : "결과";
+  }
+
+  if (
+    $("pokerPlayers")
+  ) {
+
+    $("pokerPlayers")
+      .innerHTML =
+        sortedPlayers()
+          .map(
+            player => `
+              <div
+                class="playerRow"
+              >
+                <span>
+                  ${
+                    escapeHtml(
+                      player.name
+                    )
+                  }
+                </span>
+
+                <strong>
+                  ${
+                    game.folded?.[
+                      player.uid
+                    ]
+                      ? "FOLD"
+                      : `${
+                          game.bets?.[
+                            player.uid
+                          ] || 0
+                        } / ${
+                          game.tokens?.[
+                            player.uid
+                          ] || 0
+                        }`
+                  }
+                </strong>
+              </div>
+            `
+          )
+          .join("");
+  }
+
+  const myTurn =
+    game.turnUid ===
+    user.uid;
+
+  const actions =
+    $("pokerActions");
+
+  if (actions) {
+    actions.innerHTML = "";
+  }
+
+  if (
+    game.phase ===
+    "discard"
+  ) {
+
+    if (
+      $("pokerTitle")
+    ) {
+
+      $("pokerTitle")
+        .textContent =
+          myTurn
+            ? "버릴 카드 선택"
+            : "상대 선택 중";
+    }
+
+    const hand =
+      game.initial?.[
+        user.uid
+      ] || [];
+
+    if (
+      $("pokerCards")
+    ) {
+
+      $("pokerCards")
+        .innerHTML =
+          hand
+            .map(
+              (card, index) =>
+                cardHtml(
+                  card,
+                  myTurn,
+                  index
+                )
+            )
+            .join("");
+
+      if (myTurn) {
+
+        document
+          .querySelectorAll(
+            "#pokerCards .card"
+          )
+          .forEach(
+            element => {
+
+              element.onclick =
+                () =>
+                  pokerDiscard(
+                    Number(
+                      element.dataset.idx
+                    )
+                  );
+            }
+          );
+      }
+    }
+
+    return;
+  }
+
+  if (
+    game.phase ===
+    "bet"
+  ) {
+
+    if (
+      $("pokerTitle")
+    ) {
+
+      $("pokerTitle")
+        .textContent =
+          myTurn
+            ? "베팅 차례"
+            : "상대 베팅 중";
+    }
+
+    if (
+      $("pokerCards")
+    ) {
+
+      $("pokerCards")
+        .innerHTML =
+          (
+            game.hands?.[
+              user.uid
+            ] || []
+          )
+            .map(
+              card =>
+                cardHtml(card)
+            )
+            .join("");
+    }
+
+    if (
+      myTurn &&
+      actions
+    ) {
+
+      const myBet =
+        game.bets?.[
+          user.uid
+        ] || 0;
+
+      const toCall =
+        Math.max(
+          0,
+          game.currentBet -
+            myBet
+        );
+
+      const tokens =
+        game.tokens?.[
+          user.uid
+        ] || 0;
+
+      actions.innerHTML = `
+        <button
+          id="callBtn"
+          class="primary"
+        >
+          ${
+            toCall
+              ? `콜 +${toCall}`
+              : "체크"
+          }
+        </button>
+
+        <button
+          id="raiseBtn"
+          class="secondary"
+        >
+          레이즈 +10
+        </button>
+
+        <button
+          id="foldBtn"
+          class="danger"
+        >
+          폴드
+        </button>
+      `;
+
+      bindClick(
+        "callBtn",
+        () =>
+          pokerBet(
+            "call"
+          )
+      );
+
+      bindClick(
+        "raiseBtn",
+        () =>
+          pokerBet(
+            "raise"
+          )
+      );
+
+      bindClick(
+        "foldBtn",
+        () =>
+          pokerBet(
+            "fold"
+          )
+      );
+
+      const raise =
+        $("raiseBtn");
+
+      if (raise) {
+
+        raise.disabled =
+          tokens <
+          toCall + 10;
+      }
+    }
+
+    return;
+  }
+
+  if (
+    $("pokerCards")
+  ) {
+
+    $("pokerCards")
+      .innerHTML =
+        (
+          game.hands?.[
+            user.uid
+          ] || []
+        )
+          .map(
+            card =>
+              cardHtml(card)
+          )
+          .join("");
+  }
+}
+
+async function pokerDiscard(
+  index
+) {
+
+  await secureGameTx(
+    game => {
+
+      if (
+        !game ||
+        game.phase !==
+          "discard" ||
+        game.turnUid !==
+          user.uid
+      ) {
+        return game;
+      }
+
+      const initial =
+        game.initial[
+          user.uid
+        ];
+
+      const keep =
+        initial[
+          1 - index
+        ];
+
+      game.hands[
+        user.uid
+      ] = [
+        keep,
+        game.deck.pop(),
+        game.deck.pop(),
+        game.deck.pop(),
+        game.deck.pop()
+      ];
+
+      game.discarded[
+        user.uid
+      ] = true;
+
+      const next =
+        game.order.find(
+          id =>
+            !game.discarded[
+              id
+            ]
+        );
+
+      if (next) {
+
+        game.turnUid =
+          next;
+
+      } else {
+
+        game.phase =
+          "bet";
+
+        game.bets =
+          {};
+
+        game.acted =
+          {};
+
+        game.order.forEach(
+          id => {
+            game.bets[id] =
+              0;
+          }
+        );
+
+        game.currentBet =
+          0;
+
+        game.turnUid =
+          game.order[0];
+      }
+
+      return game;
+    }
+  );
+}
+
+async function pokerBet(
+  action
+) {
+
+  await secureGameTx(
+    game => {
+
+      if (
+        !game ||
+        game.phase !==
+          "bet" ||
+        game.turnUid !==
+          user.uid
+      ) {
+        return game;
+      }
+
+      const current =
+        game.bets[
+          user.uid
+        ] || 0;
+
+      const tokens =
+        game.tokens[
+          user.uid
+        ] || 0;
+
+      const toCall =
+        Math.max(
+          0,
+          game.currentBet -
+            current
+        );
+
+      if (
+        action === "fold"
+      ) {
+
+        game.folded[
+          user.uid
+        ] = true;
+
+        game.acted[
+          user.uid
+        ] = true;
+
+      } else if (
+        action === "call"
+      ) {
+
+        const payment =
+          Math.min(
+            tokens,
+            toCall
+          );
+
+        game.tokens[
+          user.uid
+        ] -= payment;
+
+        game.bets[
+          user.uid
+        ] += payment;
+
+        game.pot +=
+          payment;
+
+        game.acted[
+          user.uid
+        ] = true;
+
+      } else {
+
+        if (
+          tokens <
+          toCall + 10
+        ) {
+
+          return game;
+        }
+
+        const payment =
+          toCall + 10;
+
+        game.tokens[
+          user.uid
+        ] -= payment;
+
+        game.bets[
+          user.uid
+        ] += payment;
+
+        game.pot +=
+          payment;
+
+        game.currentBet =
+          game.bets[
+            user.uid
+          ];
+
+        game.acted =
+          {};
+
+        game.acted[
+          user.uid
+        ] = true;
+      }
+
+      const active =
+        game.order.filter(
+          id =>
+            !game.folded[
+              id
+            ]
+        );
+
+      if (
+        active.length === 1
+      ) {
+
+        pokerAward(
+          game,
+          active
+        );
+
+        return game;
+      }
+
+      const settled =
+        active.every(
+          id =>
+            game.acted[id] &&
+            (
+              game.bets[id] ||
+              0
+            ) ===
+              game.currentBet
+        );
+
+      if (settled) {
+
+        const scores =
+          active.map(
+            id => ({
+              id,
+              score:
+                pokerSimpleScore(
+                  game.hands[id]
+                )
+            })
+          );
+
+        let best =
+          scores[0].score;
+
+        scores.forEach(
+          item => {
+
+            if (
+              cmpScore(
+                item.score,
+                best
+              ) > 0
+            ) {
+
+              best =
+                item.score;
+            }
+          }
+        );
+
+        const winners =
+          scores
+            .filter(
+              item =>
+                cmpScore(
+                  item.score,
+                  best
+                ) === 0
+            )
+            .map(
+              item =>
+                item.id
+            );
+
+        pokerAward(
+          game,
+          winners
+        );
+
+        return game;
+      }
+
+      let next =
+        pokerNext(
+          game,
+          user.uid
+        );
+
+      let guard = 0;
+
+      while (
+        game.folded[next] &&
+        guard < 20
+      ) {
+
+        guard++;
+
+        next =
+          pokerNext(
+            game,
+            next
+          );
+      }
+
+      game.turnUid =
+        next;
+
+      return game;
+    }
+  );
+}
+
+function pokerAward(
+  game,
+  winners
+) {
+
+  const share =
+    Math.floor(
+      game.pot /
+      winners.length
+    );
+
+  winners.forEach(
+    id => {
+
+      game.tokens[id] +=
+        share;
+    }
+  );
+
+  game.lastWinners =
+    winners;
+
+  game.pot =
+    0;
+
+  if (
+    game.round >=
+    game.maxRounds
+  ) {
+
+    let max =
+      -1;
+
+    let winner =
+      null;
+
+    game.order.forEach(
+      id => {
+
+        if (
+          game.tokens[id] >
+          max
+        ) {
+
+          max =
+            game.tokens[id];
+
+          winner =
+            id;
+        }
+      }
+    );
+
+    game.winnerUid =
+      winner;
+
+    return;
+  }
+
+  game.round++;
+
+  game.phase =
+    "discard";
+
+  game.initial =
+    {};
+
+  game.hands =
+    {};
+
+  game.discarded =
+    {};
+
+  game.folded =
+    {};
+
+  game.bets =
+    {};
+
+  game.acted =
+    {};
+
+  game.currentBet =
+    0;
+
+  game.deck =
+    makePokerDeck();
+
+  game.order.forEach(
+    id => {
+
+      game.initial[id] =
+        [
+          game.deck.pop(),
+          game.deck.pop()
+        ];
+
+      game.hands[id] =
+        [];
+
+      const ante =
+        Math.min(
+          2,
+          game.tokens[id]
+        );
+
+      game.tokens[id] -=
+        ante;
+
+      game.pot +=
+        ante;
+    }
+  );
+
+  game.turnUid =
+    game.order[0];
+}
+
+/* =========================================================
+   조커뽑기
+========================================================= */
+
+function makeJokerDeck() {
+
+  const deck =
+    make52();
+
+  deck.push({
+    rank:
+      "JOKER",
+
+    suit:
+      "★",
+
+    red:
+      false,
+
+    joker:
+      true,
+
+    label:
+      "조커"
+  });
+
+  return shuffle(deck);
+}
+
+function removeJokerPairs(
+  hand
+) {
+
+  const groups =
+    {};
+
+  hand.forEach(
+    (card, index) => {
+
+      if (
+        card.joker
+      ) {
+        return;
+      }
+
+      if (
+        !groups[card.rank]
+      ) {
+
+        groups[
+          card.rank
+        ] = [];
+      }
+
+      groups[
+        card.rank
+      ].push(index);
+    }
+  );
+
+  const removeSet =
+    new Set();
+
+  Object
+    .values(groups)
+    .forEach(
+      indexes => {
+
+        const count =
+          Math.floor(
+            indexes.length /
+            2
+          ) * 2;
+
+        for (
+          let i = 0;
+          i < count;
+          i++
+        ) {
+
+          removeSet.add(
+            indexes[i]
+          );
+        }
+      }
+    );
+
+  return hand.filter(
+    (_, index) =>
+      !removeSet.has(
+        index
+      )
+  );
+}
+
+function jokerNext(
+  game,
+  from
+) {
+
+  const order =
+    game.order;
+
+  const index =
+    order.indexOf(from);
+
+  for (
+    let step = 1;
+    step <=
+      order.length;
+    step++
+  ) {
+
+    const id =
+      order[
+        (
+          index +
+          step
+        ) %
+        order.length
+      ];
+
+    if (
+      (
+        game.hands[id] ||
+        []
+      ).length > 0
+    ) {
+
+      return id;
+    }
+  }
+
+  return null;
+}
+
+function jokerTarget(
+  game,
+  uid
+) {
+
+  const order =
+    game.order;
+
+  const index =
+    order.indexOf(uid);
+
+  for (
+    let step = 1;
+    step <
+      order.length;
+    step++
+  ) {
+
+    const id =
+      order[
+        (
+          index +
+          step
+        ) %
+        order.length
+      ];
+
+    if (
+      (
+        game.hands[id] ||
+        []
+      ).length > 0
+    ) {
+
+      return id;
+    }
+  }
+
+  return null;
+}
+
+async function startJoker(
+  players
+) {
+
+  const deck =
+    makeJokerDeck();
+
+  const hands =
+    {};
+
+  players.forEach(
+    player => {
+
+      hands[
+        player.uid
+      ] = [];
+    }
+  );
+
+  let index =
+    0;
+
+  while (
+    deck.length
+  ) {
+
+    const player =
+      players[
+        index %
+        players.length
+      ];
+
+    hands[
+      player.uid
+    ].push(
+      deck.pop()
+    );
+
+    index++;
+  }
+
+  Object
+    .keys(hands)
+    .forEach(
+      id => {
+
+        hands[id] =
+          shuffle(
+            removeJokerPairs(
+              hands[id]
+            )
+          );
+      }
+    );
+
+  const first =
+    players.find(
+      player =>
+        hands[
+          player.uid
+        ].length > 0
+    );
+
+  const game = {
+
+    type:
+      "joker",
+
+    order:
+      players.map(
+        player =>
+          player.uid
+      ),
+
+    hands,
+
+    turnUid:
+      first?.uid ||
+      players[0].uid,
+
+    winnerUid:
+      null,
+
+    loserUid:
+      null,
+
+    message:
+      "상대 카드 한 장을 뽑으세요.",
+
+    rev:
+      0,
+
+    lastActor:
+      user.uid
+  };
+
+  await update(
+    ref(
+      db,
+      `rooms/${roomCode}`
+    ),
+
+    {
+      status:
+        "playing",
+
+      mode:
+        "joker",
+
+      game
+    }
+  );
+}
+
+function checkJokerEnd(
+  game
+) {
+
+  const withCards =
+    game.order.filter(
+      id =>
+        (
+          game.hands[id] ||
+          []
+        ).length > 0
+    );
+
+  if (
+    withCards.length <= 1
+  ) {
+
+    game.loserUid =
+      withCards[0] ||
+      null;
+
+    const safe =
+      game.order.filter(
+        id =>
+          id !==
+          game.loserUid
+      );
+
+    game.winnerUid =
+      safe[0] ||
+      null;
+
+    return true;
+  }
+
+  return false;
+}
+
+function renderJoker() {
+
+  const game =
+    roomData.game;
+
+  show(
+    "jokerScreen"
+  );
+
+  const myTurn =
+    game.turnUid ===
+    user.uid;
+
+  const hand =
+    game.hands?.[
+      user.uid
+    ] || [];
+
+  if (
+    $("jokerTurn")
+  ) {
+
+    $("jokerTurn")
+      .textContent =
+        myTurn
+          ? "🟢 내 차례"
+          : `⏳ ${
+              escapeHtml(
+                roomData.players[
+                  game.turnUid
+                ]?.name ||
+                "상대"
+              )
+            } 차례`;
+  }
+
+  if (
+    $("jokerRoom")
+  ) {
+
+    $("jokerRoom")
+      .textContent =
+        "방 " +
+        roomCode;
+  }
+
+  if (
+    $("jokerCount")
+  ) {
+
+    $("jokerCount")
+      .textContent =
+        `${hand.length}장`;
+  }
+
+  if (
+    $("jokerMessage")
+  ) {
+
+    $("jokerMessage")
+      .textContent =
+        game.message || "";
+  }
+
+  if (
+    $("jokerPlayers")
+  ) {
+
+    $("jokerPlayers")
+      .innerHTML =
+        sortedPlayers()
+          .map(
+            player => `
+              <div
+                class="playerRow"
+              >
+                <span>
+                  ${
+                    escapeHtml(
+                      player.name
+                    )
+                  }
+                </span>
+
+                <strong>
+                  ${
+                    game.hands?.[
+                      player.uid
+                    ]?.length || 0
+                  }장
+                </strong>
+              </div>
+            `
+          )
+          .join("");
+  }
+
+  if (
+    $("jokerHand")
+  ) {
+
+    $("jokerHand")
+      .innerHTML =
+        hand
+          .map(
+            card =>
+              cardHtml(card)
+          )
+          .join("");
+  }
+
+  const targetId =
+    jokerTarget(
+      game,
+      user.uid
+    );
+
+  const targetHand =
+    targetId
+      ? game.hands[
+          targetId
+        ] || []
+      : [];
+
+  if (
+    $("jokerTargetTitle")
+  ) {
+
+    $("jokerTargetTitle")
+      .textContent =
+        targetId
+          ? `${
+              escapeHtml(
+                roomData.players[
+                  targetId
+                ]?.name ||
+                "상대"
+              )
+            }의 카드에서 한 장을 뽑으세요.`
+          : "대상 없음";
+  }
+
+  if (
+    $("jokerTarget")
+  ) {
+
+    $("jokerTarget")
+      .innerHTML =
+        myTurn
+          ? targetHand
+              .map(
+                (_, index) => `
+                  <div
+                    class="cardback"
+                    data-i="${index}"
+                  >
+                    ♠
+                  </div>
+                `
+              )
+              .join("")
+          : "";
+
+    document
+      .querySelectorAll(
+        "#jokerTarget .cardback"
+      )
+      .forEach(
+        element => {
+
+          element.onclick =
+            () =>
+              jokerTake(
+                Number(
+                  element.dataset.i
+                )
+              );
+        }
+      );
+  }
+
+  const shuffleBtn =
+    $("jokerShuffleBtn");
+
+  if (shuffleBtn) {
+    shuffleBtn.disabled =
+      !myTurn;
+  }
+}
+
+async function jokerTake(
+  index
+) {
+
+  await secureGameTx(
+    game => {
+
+      if (
+        !game ||
+        game.turnUid !==
+          user.uid ||
+        game.winnerUid
+      ) {
+        return game;
+      }
+
+      const targetId =
+        jokerTarget(
+          game,
+          user.uid
+        );
+
+      if (!targetId) {
+        return game;
+      }
+
+      const targetHand =
+        (
+          game.hands[
+            targetId
+          ] || []
+        ).slice();
+
+      if (
+        index < 0 ||
+        index >=
+          targetHand.length
+      ) {
+        return game;
+      }
+
+      const card =
+        targetHand.splice(
+          index,
+          1
+        )[0];
+
+      game.hands[
+        targetId
+      ] = targetHand;
+
+      const myHand =
+        (
+          game.hands[
+            user.uid
+          ] || []
+        ).slice();
+
+      myHand.push(card);
+
+      game.hands[
+        user.uid
+      ] =
+        removeJokerPairs(
+          myHand
+        );
+
+      if (
+        checkJokerEnd(game)
+      ) {
+        return game;
+      }
+
+      game.turnUid =
+        jokerNext(
+          game,
+          user.uid
+        );
+
+      game.message =
+        "상대 카드 한 장을 뽑으세요.";
+
+      return game;
+    }
+  );
+}
+
+async function jokerShuffle() {
+
+  await secureGameTx(
+    game => {
+
+      if (
+        !game ||
+        game.turnUid !==
+          user.uid
+      ) {
+        return game;
+      }
+
+      game.hands[
+        user.uid
+      ] =
+        shuffle(
+          (
+            game.hands[
+              user.uid
+            ] || []
+          ).slice()
+        );
+
+      return game;
+    }
+  );
+}
+
+/* =========================================================
+   다우트
+========================================================= */
+
+async function startDoubt(
+  players
+) {
+
+  const deck =
+    make52();
+
+  const hands =
+    {};
+
+  players.forEach(
+    player => {
+
+      hands[
+        player.uid
+      ] = [];
+    }
+  );
+
+  let index = 0;
+
+  while (
+    deck.length
+  ) {
+
+    const player =
+      players[
+        index %
+        players.length
+      ];
+
+    hands[
+      player.uid
+    ].push(
+      deck.pop()
+    );
+
+    index++;
+  }
+
+  const game = {
+
+    type:
+      "doubt",
+
+    order:
+      players.map(
+        player =>
+          player.uid
+      ),
+
+    hands,
+
+    pile:
+      [],
+
+    turnUid:
+      players[0].uid,
+
+    lastPlay:
+      null,
+
+    winnerUid:
+      null,
+
+    message:
+      "카드 1장을 골라 숫자를 선언하세요.",
+
+    rev:
+      0,
+
+    lastActor:
+      user.uid
+  };
+
+  await update(
+    ref(
+      db,
+      `rooms/${roomCode}`
+    ),
+
+    {
+      status:
+        "playing",
+
+      mode:
+        "doubt",
+
+      game
+    }
+  );
+}
+
+function renderDoubt() {
+
+  const game =
+    roomData.game;
+
+  show(
+    "doubtScreen"
+  );
+
+  const myTurn =
+    game.turnUid ===
+    user.uid;
+
+  const hand =
+    game.hands?.[
+      user.uid
+    ] || [];
+
+  if (
+    $("doubtTurn")
+  ) {
+
+    $("doubtTurn")
+      .textContent =
+        myTurn
+          ? "🟢 내 차례"
+          : `⏳ ${
+              escapeHtml(
+                roomData.players[
+                  game.turnUid
+                ]?.name ||
+                "상대"
+              )
+            } 차례`;
+  }
+
+  if (
+    $("doubtCount")
+  ) {
+
+    $("doubtCount")
+      .textContent =
+        `${hand.length}장`;
+  }
+
+  if (
+    $("doubtMessage")
+  ) {
+
+    $("doubtMessage")
+      .textContent =
+        game.message || "";
+  }
+
+  if (
+    $("doubtPlayers")
+  ) {
+
+    $("doubtPlayers")
+      .innerHTML =
+        sortedPlayers()
+          .map(
+            player => `
+              <div
+                class="playerRow"
+              >
+                <span>
+                  ${
+                    escapeHtml(
+                      player.name
+                    )
+                  }
+                </span>
+
+                <strong>
+                  ${
+                    game.hands?.[
+                      player.uid
+                    ]?.length || 0
+                  }장
+                </strong>
+              </div>
+            `
+          )
+          .join("");
+  }
+
+  if (
+    $("doubtCenter")
+  ) {
+
+    $("doubtCenter")
+      .innerHTML =
+        game.lastPlay
+          ? `
+            <b>
+              ${
+                escapeHtml(
+                  roomData.players[
+                    game.lastPlay.uid
+                  ]?.name ||
+                  "플레이어"
+                )
+              }
+            </b>
+
+            · "${game.lastPlay.claim}" 선언
+
+            · 중앙 ${game.pile.length}장
+          `
+          : `중앙 ${game.pile.length}장`;
+  }
+
+  if (
+    $("doubtHand")
+  ) {
+
+    $("doubtHand")
+      .innerHTML =
+        hand
+          .map(
+            (card, index) =>
+              cardHtml(
+                card,
+                myTurn &&
+                !game.lastPlay,
+                index
+              )
+          )
+          .join("");
+  }
+
+  if (
+    $("doubtControls")
+  ) {
+
+    $("doubtControls")
+      .innerHTML = "";
+  }
+
+  if (
+    myTurn &&
+    !game.lastPlay
+  ) {
+
+    document
+      .querySelectorAll(
+        "#doubtHand .card"
+      )
+      .forEach(
+        element => {
+
+          element.onclick =
+            () =>
+              showClaimPicker(
+                Number(
+                  element.dataset.idx
+                )
+              );
+        }
+      );
+
+  } else if (
+    myTurn &&
+    game.lastPlay &&
+    game.lastPlay.uid !==
+      user.uid
+  ) {
+
+    const controls =
+      $("doubtControls");
+
+    if (controls) {
+
+      controls.innerHTML = `
+        <div
+          class="betrow"
+        >
+          <button
+            id="believeBtn"
+            class="secondary"
+          >
+            믿기
+          </button>
+
+          <button
+            id="doubtBtn"
+            class="danger"
+          >
+            다우트!
+          </button>
+        </div>
+      `;
+
+      bindClick(
+        "believeBtn",
+        () =>
+          resolveDoubt(
+            false
+          )
+      );
+
+      bindClick(
+        "doubtBtn",
+        () =>
+          resolveDoubt(
+            true
+          )
+      );
+    }
+  }
+}
+
+function showClaimPicker(
+  index
+) {
+
+  const controls =
+    $("doubtControls");
+
+  if (!controls) {
+    return;
+  }
+
+  controls.innerHTML = `
+    <div class="muted">
+      선언할 숫자/문자
+    </div>
+
+    <div class="rankgrid">
+
+      ${
+        RANKS
+          .map(
+            rank => `
+              <button
+                class="rankbtn"
+                data-r="${rank}"
+              >
+                ${rank}
+              </button>
+            `
+          )
+          .join("")
+      }
+
+    </div>
+  `;
+
+  document
+    .querySelectorAll(
+      ".rankbtn"
+    )
+    .forEach(
+      button => {
+
+        button.onclick =
+          () =>
+            submitDoubt(
+              index,
+              button.dataset.r
+            );
+      }
+    );
+}
+
+async function submitDoubt(
+  index,
+  claim
+) {
+
+  await secureGameTx(
+    game => {
+
+      if (
+        !game ||
+        game.turnUid !==
+          user.uid ||
+        game.lastPlay
+      ) {
+        return game;
+      }
+
+      const hand =
+        (
+          game.hands[
+            user.uid
+          ] || []
+        ).slice();
+
+      const card =
+        hand[index];
+
+      if (!card) {
+        return game;
+      }
+
+      hand.splice(
+        index,
+        1
+      );
+
+      game.hands[
+        user.uid
+      ] = hand;
+
+      game.pile.push(
+        card
+      );
+
+      game.lastPlay = {
+        uid:
+          user.uid,
+
+        claim,
+
+        actual:
+          card.rank
+      };
+
+      game.turnUid =
+        pokerNext(
+          game,
+          user.uid
+        );
+
+      game.message =
+        `${claim} 선언. 믿기 또는 다우트!`;
+
+      return game;
+    }
+  );
+}
+
+async function resolveDoubt(
+  challenge
+) {
+
+  await secureGameTx(
+    game => {
+
+      if (
+        !game ||
+        !game.lastPlay ||
+        game.turnUid !==
+          user.uid
+      ) {
+        return game;
+      }
+
+      const last =
+        game.lastPlay;
+
+      if (challenge) {
+
+        const liar =
+          last.actual !==
+          last.claim;
+
+        const loser =
+          liar
+            ? last.uid
+            : user.uid;
+
+        game.hands[
+          loser
+        ] =
+          (
+            game.hands[
+              loser
+            ] || []
+          ).concat(
+            game.pile
+          );
+
+        game.pile =
+          [];
+
+        game.lastPlay =
+          null;
+
+        game.turnUid =
+          loser;
+
+        game.message =
+          liar
+            ? "거짓말 적발!"
+            : "진실이었다! 다우트 실패";
+
+        return game;
+      }
+
+      const previous =
+        last.uid;
+
+      game.lastPlay =
+        null;
+
+      game.turnUid =
+        user.uid;
+
+      game.message =
+        "믿었습니다. 카드를 내세요.";
+
+      if (
+        (
+          game.hands[
+            previous
+          ] || []
+        ).length === 0
+      ) {
+
+        game.winnerUid =
+          previous;
+      }
+
+      return game;
+    }
+  );
+}
+
+/* =========================================================
+   결과
+========================================================= */
+
+function renderResult() {
+
+  const game =
+    roomData.game;
+
+  if (
+    !game?.winnerUid
+  ) {
+    return;
+  }
+
+  show(
+    "resultScreen"
+  );
+
+  const winner =
+    roomData.players?.[
+      game.winnerUid
+    ];
+
+  if (
+    game.type ===
+      "joker" &&
+    game.loserUid
+  ) {
+
+    const loser =
+      roomData.players?.[
+        game.loserUid
+      ];
+
+    if (
+      $("winnerLabel")
+    ) {
+
+      $("winnerLabel")
+        .textContent =
+          loser
+            ? `🃏 ${
+                escapeHtml(
+                  loser.name
+                )
+              } 패배!`
+            : "게임 종료";
+    }
+
+  } else if (
+    $("winnerLabel")
+  ) {
+
+    $("winnerLabel")
+      .textContent =
+        winner
+          ? `🏆 ${
+              escapeHtml(
+                winner.name
+              )
+            } 승리!`
+          : "게임 종료";
+  }
+
+  if (
+    $("resultPlayers")
+  ) {
+
+    $("resultPlayers")
+      .innerHTML =
+        sortedPlayers()
+          .map(
+            player => `
+              <div
+                class="playerRow ${
+                  player.uid ===
+                  game.winnerUid
+                    ? "me"
+                    : ""
+                }"
+              >
+                <span>
+                  ${
+                    escapeHtml(
+                      player.name
+                    )
+                  }
+                </span>
+
+                <strong>
+                  ${
+                    player.uid ===
+                    game.winnerUid
+                      ? "🏆"
+                      : ""
+                  }
+                </strong>
+              </div>
+            `
+          )
+          .join("");
+  }
+}
+
+/* =========================================================
+   대기실 복귀
+========================================================= */
+
+async function backLobby() {
+
+  if (
+    !roomData ||
+    !user
+  ) {
+    return;
+  }
+
+  if (
+    roomData.hostUid ===
+    user.uid
+  ) {
+
+    const updates = {
+      status:
+        "lobby",
+
+      game:
+        null
+    };
+
+    Object
+      .keys(
+        roomData.players ||
+        {}
+      )
+      .forEach(
+        id => {
+
+          updates[
+            `players/${id}/ready`
+          ] = false;
+        }
+      );
+
+    try {
+
+      await update(
+        ref(
+          db,
+          `rooms/${roomCode}`
+        ),
+
+        updates
+      );
+
+    } catch (error) {
+
+      console.error(error);
+    }
+
+  } else {
+
+    show(
+      "lobbyScreen"
+    );
+  }
+}
+
+/* =========================================================
+   방 나가기
+========================================================= */
+
+async function leaveRoom() {
+
+  if (
+    !roomCode ||
+    !user
+  ) {
+
+    show(
+      "homeScreen"
+    );
+
+    return;
+  }
+
+  const code =
+    roomCode;
+
+  const wasHost =
+    roomData?.hostUid ===
+    user.uid;
+
+  try {
+
+    await remove(
+      ref(
+        db,
+        `rooms/${code}/players/${user.uid}`
+      )
+    );
+
+    if (wasHost) {
+
+      const others =
+        sortedPlayers()
+          .filter(
+            player =>
+              player.uid !==
+              user.uid
+          );
+
+      if (
+        others.length
+      ) {
+
+        await update(
+          ref(
+            db,
+            `rooms/${code}`
+          ),
+
+          {
+            hostUid:
+              others[0].uid,
+
+            status:
+              "lobby",
+
+            game:
+              null
+          }
+        );
+
+      } else {
+
+        await remove(
+          ref(
+            db,
+            `rooms/${code}`
+          )
+        );
+      }
+    }
+
+  } catch (error) {
+
+    console.error(error);
+
+  } finally {
+
+    if (roomUnsub) {
+
+      roomUnsub();
+
+      roomUnsub =
+        null;
+    }
+
+    roomCode =
+      null;
+
+    roomData =
+      null;
+
+    pendingSeven =
+      false;
+
+    show(
+      "homeScreen"
+    );
+  }
+}
+
+/* =========================================================
+   이벤트 연결
+========================================================= */
+
+function bindClick(
+  id,
+  handler
+) {
+
+  const element =
+    $(id);
+
+  if (element) {
+
+    element.onclick =
+      handler;
+  }
+}
+
+/* 계정 */
+
+bindClick(
+  "googleLoginBtn",
+  googleLogin
+);
+
+bindClick(
+  "googleLogoutBtn",
+  switchToGuest
+);
+
+/* 방 */
+
+bindClick(
+  "createRoomBtn",
+  createRoom
+);
+
+bindClick(
+  "joinRoomBtn",
+  joinRoom
+);
+
+bindClick(
+  "readyBtn",
+  toggleReady
+);
+
+bindClick(
+  "startOnlineBtn",
+  startOnline
+);
+
+/* 나가기 */
+
+bindClick(
+  "leaveRoomBtn",
+  leaveRoom
+);
+
+bindClick(
+  "leaveGameBtn",
+  leaveRoom
+);
+
+bindClick(
+  "pokerLeaveBtn",
+  leaveRoom
+);
+
+bindClick(
+  "jokerLeaveBtn",
+  leaveRoom
+);
+
+bindClick(
+  "doubtLeaveBtn",
+  leaveRoom
+);
+
+bindClick(
+  "resultLeaveBtn",
+  leaveRoom
+);
+
+bindClick(
+  "backLobbyBtn",
+  backLobby
+);
+
+/* 게임 */
+
+bindClick(
+  "ocDrawBtn",
+  ocDraw
+);
+
+bindClick(
+  "jokerShuffleBtn",
+  jokerShuffle
+);
+
+/* 7 무늬 */
+
+document
+  .querySelectorAll(
+    ".suitBtn"
+  )
+  .forEach(
+    button => {
+
+      button.onclick =
+        () =>
+          chooseSuit(
+            button.dataset.suit
+          );
+    }
+  );
+
+/* 모드 */
+
+document
+  .querySelectorAll(
+    ".modebtn"
+  )
+  .forEach(
+    button => {
+
+      button.onclick =
+        () =>
+          setMode(
+            button.dataset.mode
+          );
+    }
+  );
+
+/* 최대 인원 */
+
+document
+  .querySelectorAll(
+    ".maxpbtn"
+  )
+  .forEach(
+    button => {
+
+      button.onclick =
+        () =>
+          setMaxPlayers(
+            button.dataset.maxp
+          );
+    }
+  );
+
+/* 방 코드 복사 */
+
+const copyButton =
+  $("copyRoomBtn");
+
+if (copyButton) {
+
+  copyButton.onclick =
+    async () => {
+
+      try {
+
+        await navigator
+          .clipboard
+          .writeText(
+            roomCode
+          );
+
+        copyButton
+          .textContent =
+            "✓";
+
+        setTimeout(
+          () => {
+
+            copyButton
+              .textContent =
+                "복사";
+          },
+          700
+        );
+
+      } catch (error) {
+
+        prompt(
+          "방 코드",
+          roomCode
+        );
+      }
+    };
+}
+
+/* 방 코드 자동 대문자 */
+
+const roomCodeInput =
+  $("roomCodeInput");
+
+if (roomCodeInput) {
+
+  roomCodeInput
+    .addEventListener(
+      "input",
+
+      event => {
+
+        event.target.value =
+          event.target.value
+            .toUpperCase()
+            .replace(
+              /[^A-Z0-9]/g,
+              ""
+            )
+            .slice(
+              0,
+              6
+            );
+      }
+    );
+}
+
+/* =========================================================
+   실행
+========================================================= */
+
 boot();
-
-$("jokerShuffleBtn").onclick=jokerShuffle;
