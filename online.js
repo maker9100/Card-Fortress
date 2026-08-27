@@ -1,43 +1,989 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
-import { getDatabase, ref, get, set, update, remove, onValue, runTransaction, onDisconnect } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-database.js";
-import { firebaseConfig } from "./firebase-config.js";
+import {
+  auth,
+  db,
+  ref,
+  set,
+  get,
+  update,
+  remove,
+  onValue,
+  runTransaction,
+  signInAnonymously,
+  onAuthStateChanged
+} from "./firebase-config.js";
 
 const $ = (id) => document.getElementById(id);
-const SUITS=[{s:"♠",red:false},{s:"♥",red:true},{s:"♦",red:true},{s:"♣",red:false}];
-const RANKS=["2","3","4","5","6","7","8","9","10","J","Q","K","A"];
-let app,auth,db,user=null,roomCode=null,roomData=null,roomUnsub=null,pendingSeven=false;
 
-function show(id){document.querySelectorAll('.screen').forEach(x=>x.classList.remove('active'));$(id).classList.add('active');}
-function normalizeName(s){return (s||'').trim().slice(0,12)}
-function randomRoomCode(){const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let out='';for(let i=0;i<6;i++)out+=chars[Math.floor(Math.random()*chars.length)];return out}
-function configLooksReady(){return firebaseConfig.apiKey&&!firebaseConfig.apiKey.includes('YOUR_')&&firebaseConfig.databaseURL&&!firebaseConfig.databaseURL.includes('YOUR_')}
-function setError(msg){$('setupError').textContent=msg||''}
-async function boot(){
-  if(!configLooksReady()){$('connectionBadge').textContent='●';$('connectionBadge').classList.remove('online');$('connectionBadge').title='Firebase 설정 필요';setError('Firebase 설정이 필요합니다.');$('createRoomBtn').disabled=true;$('joinRoomBtn').disabled=true;return}
-  try{app=initializeApp(firebaseConfig);auth=getAuth(app);db=getDatabase(app);await signInAnonymously(auth);onAuthStateChanged(auth,u=>{user=u;$('connectionBadge').textContent='●';$('connectionBadge').classList.toggle('online',!!u);$('connectionBadge').title=u?'온라인 연결됨':'연결 중'})}
-  catch(err){console.error(err);$('connectionBadge').textContent='●';$('connectionBadge').classList.remove('online');$('connectionBadge').title='연결 실패';setError('Firebase 연결 실패: '+err.message)}
+const homeScreen = $("homeScreen");
+const lobbyScreen = $("lobbyScreen");
+const gameScreen = $("gameScreen");
+const resultScreen = $("resultScreen");
+
+const connectionBadge = $("connectionBadge");
+
+const createName = $("createName");
+const createMaxPlayers = $("createMaxPlayers");
+const createBtn = $("createBtn");
+
+const joinName = $("joinName");
+const joinCode = $("joinCode");
+const joinBtn = $("joinBtn");
+
+const roomCodeText = $("roomCodeText");
+const lobbyPlayers = $("lobbyPlayers");
+const startBtn = $("startBtn");
+const leaveBtn = $("leaveBtn");
+
+const gameRoomCode = $("gameRoomCode");
+const gameStatus = $("gameStatus");
+const gamePlayers = $("gamePlayers");
+const discardPile = $("discardPile");
+const drawPile = $("drawPile");
+const handArea = $("handArea");
+
+const resultTitle = $("resultTitle");
+const resultText = $("resultText");
+const backHomeBtn = $("backHomeBtn");
+
+let uid = null;
+let roomCode = null;
+let roomRef = null;
+let roomUnsubscribe = null;
+let isHost = false;
+
+let latestRoom = null;
+
+// ------------------------------------------------------
+// 화면 전환
+// ------------------------------------------------------
+
+function showScreen(screen) {
+  [homeScreen, lobbyScreen, gameScreen, resultScreen].forEach((s) => {
+    if (s) s.classList.remove("active");
+  });
+
+  if (screen) screen.classList.add("active");
 }
-function makeDeck(){const d=[];for(const suit of SUITS)for(const rank of RANKS)d.push({rank,suit:suit.s,red:suit.red,joker:false});if(Math.random()<.35)d.push({rank:'JOKER',suit:'★',joker:true,jokerType:'black',label:'흑조커',red:false});if(Math.random()<.20)d.push({rank:'JOKER',suit:'★',joker:true,jokerType:'color',label:'컬러조커',red:true});return shuffle(d)}
-function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
-function attackValue(c){if(!c)return 0;if(c.joker)return c.jokerType==='color'?7:5;if(c.rank==='A'&&c.suit==='♠')return 5;if(c.rank==='A')return 3;if(c.rank==='2')return 2;return 0}
-function nextUid(game,fromUid,steps=1){const order=game.order;let i=order.indexOf(fromUid);if(i<0)return order[0];let moved=0;while(moved<steps){i=(i+game.direction+order.length)%order.length;const uid=order[i];if(!game.eliminated?.[uid])moved++}return order[i]}
-function canPlay(game,card){const top=game.topCard;if(!top)return true;if(game.extraChain){if(card.joker)return true;if(game.chosenSuit)return card.suit===game.chosenSuit||card.rank==='7';return card.suit===top.suit||card.rank===top.rank}if(game.pendingDraw>0){if(top.rank==='2'&&!top.joker){if(card.rank==='3'&&card.suit===top.suit)return true;return card.rank==='2'}if(top.rank==='A'&&top.suit==='♠'&&!top.joker)return !!card.joker;if(top.rank==='A'&&!top.joker)return card.rank==='A';if(top.joker&&top.jokerType==='black')return(card.rank==='A'&&card.suit==='♠')||(card.joker&&card.jokerType==='color');if(top.joker&&top.jokerType==='color')return false;return false}if(card.joker)return true;if(game.chosenSuit)return card.suit===game.chosenSuit||card.rank==='7';if(top.joker)return card.joker||attackValue(card)>0;return card.suit===top.suit||card.rank===top.rank}
-function drawFromState(game,count){const cards=[];for(let i=0;i<count;i++){if(!game.deck.length){if(!game.discard||game.discard.length<=1)break;const keep=game.discard[game.discard.length-1];game.deck=shuffle(game.discard.slice(0,-1));game.discard=[keep]}if(game.deck.length)cards.push(game.deck.pop())}return cards}
-function cardHtml(c,playable=false,idx=-1){if(!c)return'';if(c.joker)return`<div class="card joker ${playable?'playable':''}" data-idx="${idx}"><div class="rank">★</div><div class="big">🃏</div><div class="bottom">${c.label||'JOKER'}</div></div>`;return`<div class="card ${c.red?'red':''} ${playable?'playable':''}" data-idx="${idx}"><div class="rank">${c.rank}${c.suit}</div><div class="big">${c.suit}</div><div class="bottom">${c.rank}</div></div>`}
-async function createRoom(){setError('');const name=normalizeName($('nicknameInput').value);if(!name){setError('닉네임을 입력하세요.');return}if(!user){setError('아직 온라인 연결 중입니다.');return}for(let tries=0;tries<10;tries++){const code=randomRoomCode();const roomRef=ref(db,'rooms/'+code);const tx=await runTransaction(roomRef,cur=>{if(cur!==null)return;return{hostUid:user.uid,status:'lobby',createdAt:Date.now(),players:{[user.uid]:{name,ready:false,seat:0,joinedAt:Date.now()}}}});if(tx.committed){enterRoom(code);return}}setError('방 코드를 만들지 못했습니다. 다시 시도하세요.')}
-async function joinRoom(){setError('');const name=normalizeName($('nicknameInput').value);const code=($('roomCodeInput').value||'').trim().toUpperCase();if(!name){setError('닉네임을 입력하세요.');return}if(code.length!==6){setError('6자리 방 코드를 입력하세요.');return}if(!user){setError('아직 온라인 연결 중입니다.');return}const roomRef=ref(db,'rooms/'+code);const snap=await get(roomRef);if(!snap.exists()){setError('존재하지 않는 방입니다.');return}const room=snap.val();if(room.status!=='lobby'){setError('이미 게임이 시작된 방입니다.');return}const existing=room.players||{};if(!existing[user.uid]&&Object.keys(existing).length>=4){setError('방이 가득 찼습니다.');return}if(!existing[user.uid]){const seats=Object.values(existing).map(p=>p.seat);let seat=0;while(seats.includes(seat))seat++;await set(ref(db,`rooms/${code}/players/${user.uid}`),{name,ready:false,seat,joinedAt:Date.now()})}enterRoom(code)}
-async function enterRoom(code){roomCode=code;$('roomCodeLabel').textContent=code;$('gameRoomLabel').textContent='방 '+code;if(roomUnsub)roomUnsub();const playerRef=ref(db,`rooms/${code}/players/${user.uid}`);try{onDisconnect(playerRef).remove()}catch(e){}roomUnsub=onValue(ref(db,'rooms/'+code),snap=>{if(!snap.exists()){roomData=null;roomCode=null;show('homeScreen');setError('방이 종료되었습니다.');return}roomData=snap.val();renderRoom()});show('lobbyScreen')}
-function sortedPlayers(){if(!roomData?.players)return[];return Object.entries(roomData.players).map(([uid,p])=>({uid,...p})).sort((a,b)=>(a.seat??99)-(b.seat??99))}
-function renderRoom(){const players=sortedPlayers();if(!players.length)return;if(roomData.status==='lobby'){show('lobbyScreen');$('playerList').innerHTML=players.map(p=>`<div class="playerRow ${p.uid===user.uid?'me':''}"><div><div class="playerName">${escapeHtml(p.name)} ${p.uid===roomData.hostUid?'👑':''}</div><div class="status">${p.uid===user.uid?'나':''}</div></div><strong>${p.ready?'✅ 준비':'⏳ 대기'}</strong></div>`).join('');const me=roomData.players[user.uid];$('readyBtn').textContent=me?.ready?'↩ 준비 취소':'✅ 준비';const isHost=roomData.hostUid===user.uid;$('startOnlineBtn').style.display=isHost?'block':'none';$('startOnlineBtn').disabled=!(players.length>=2&&players.every(p=>p.ready))}else if(roomData.status==='playing')renderGame();else if(roomData.status==='finished')renderResult()}
-async function toggleReady(){const me=roomData?.players?.[user.uid];if(me)await update(ref(db,`rooms/${roomCode}/players/${user.uid}`),{ready:!me.ready})}
-async function startGame(){if(roomData.hostUid!==user.uid)return;const players=sortedPlayers();if(players.length<2||!players.every(p=>p.ready))return;const deck=makeDeck(),hands={};for(const p of players)hands[p.uid]=[];for(let r=0;r<7;r++)for(const p of players)hands[p.uid].push(deck.pop());let starterIndex=deck.findIndex(c=>!c.joker&&!['A','2','J','Q','K','7'].includes(c.rank));if(starterIndex<0)starterIndex=0;const starter=deck.splice(starterIndex,1)[0];const game={order:players.map(p=>p.uid),turnUid:players[0].uid,direction:1,pendingDraw:0,chosenSuit:null,extraChain:false,extraSource:null,deck,discard:[starter],topCard:starter,hands,eliminated:{},winnerUid:null,message:'게임 시작'};await update(ref(db,'rooms/'+roomCode),{status:'playing',game})}
-function renderGame(){const game=roomData.game;if(!game)return;show('gameScreen');const players=sortedPlayers();const myHand=game.hands?.[user.uid]||[];const isMyTurn=game.turnUid===user.uid;$('turnLabel').textContent=isMyTurn?'🟢 내 차례':`⏳ ${escapeHtml(roomData.players[game.turnUid]?.name||'상대')} 차례`;$('topCard').innerHTML=cardHtml(game.topCard);$('chosenSuit').textContent=game.chosenSuit?`7 지정 무늬: ${game.chosenSuit}`:'';$('attackInfo').textContent=game.pendingDraw>0?`⚠ 공격 누적 +${game.pendingDraw}`:'';$('message').textContent=game.message||'';$('myCardCount').textContent=myHand.length+'장';$('drawBtn').disabled=!isMyTurn;$('opponents').innerHTML=players.filter(p=>p.uid!==user.uid).map(p=>{const n=game.hands?.[p.uid]?.length??0;return`<div class="opponent ${n<=2?'danger':''}"><strong>${escapeHtml(p.name)}</strong><span>${n}장</span></div>`}).join('');$('myHand').innerHTML=myHand.map((c,i)=>cardHtml(c,isMyTurn&&canPlay(game,c),i)).join('');document.querySelectorAll('#myHand .card').forEach(el=>el.onclick=()=>{if(isMyTurn&&el.classList.contains('playable'))playCard(Number(el.dataset.idx))});if(pendingSeven&&isMyTurn)show('suitScreen')}
-async function playCard(index){if(!roomCode)return;let needsSuit=false;const tx=await runTransaction(ref(db,`rooms/${roomCode}/game`),game=>{if(!game||game.winnerUid||game.turnUid!==user.uid)return game;const hand=(game.hands?.[user.uid]||[]).slice(),card=hand[index];if(!card||!canPlay(game,card))return game;const topBefore=game.topCard;const blocksTwo=game.pendingDraw>0&&topBefore?.rank==='2'&&card.rank==='3'&&card.suit===topBefore.suit;hand.splice(index,1);game.hands[user.uid]=hand;game.discard=game.discard||[];game.discard.push(card);game.topCard=card;if(blocksTwo)game.pendingDraw=0;else{const atk=attackValue(card);if(atk>0)game.pendingDraw=(game.pendingDraw||0)+atk}game.chosenSuit=null;if(hand.length===0){game.winnerUid=user.uid;game.message=`${roomData.players[user.uid]?.name||'플레이어'} 승리`;return game}if(card.rank==='7'){game.waitingSuitUid=user.uid;needsSuit=true;game.message='7: 무늬를 선택하세요.';return game}const playerCount=game.order.length;let extra=false,skip=false;if(card.rank==='K'){extra=true;game.extraSource='K'}else if(card.rank==='J'&&playerCount<=2){extra=true;game.extraSource='J'}else if(card.rank==='J')skip=true;else if(card.rank==='Q'){game.direction*=-1;if(playerCount===2)skip=true}if(extra){game.extraChain=true;game.turnUid=user.uid;game.message=`${card.rank} 효과: 한 장 더 낼 수 있습니다.`}else{game.extraChain=false;game.extraSource=null;game.turnUid=nextUid(game,user.uid,skip?2:1);game.message=''}return game});if(tx.committed&&needsSuit){pendingSeven=true;show('suitScreen')}}
-async function chooseSuit(suit){const tx=await runTransaction(ref(db,`rooms/${roomCode}/game`),game=>{if(!game||game.waitingSuitUid!==user.uid||game.turnUid!==user.uid)return game;game.chosenSuit=suit;game.waitingSuitUid=null;game.extraChain=false;game.extraSource=null;game.turnUid=nextUid(game,user.uid,1);game.message=`7 효과: ${suit} 지정`;return game});if(tx.committed){pendingSeven=false;show('gameScreen')}}
-async function drawCardsAction(){await runTransaction(ref(db,`rooms/${roomCode}/game`),game=>{if(!game||game.winnerUid||game.turnUid!==user.uid||game.waitingSuitUid)return game;if(game.extraChain){game.extraChain=false;game.extraSource=null;game.turnUid=nextUid(game,user.uid,1);game.message='추가 행동 종료';return game}const hand=(game.hands?.[user.uid]||[]).slice();const amount=game.pendingDraw>0?game.pendingDraw:1;hand.push(...drawFromState(game,amount));game.hands[user.uid]=hand;game.pendingDraw=0;game.chosenSuit=null;if(hand.length>20){game.eliminated=game.eliminated||{};game.eliminated[user.uid]=true;const alive=game.order.filter(uid=>!game.eliminated[uid]);if(alive.length===1){game.winnerUid=alive[0];game.message='21장 이상 파산'}else{game.turnUid=nextUid(game,user.uid,1);game.message=`${roomData.players[user.uid]?.name||'플레이어'} 파산`}return game}game.turnUid=nextUid(game,user.uid,1);game.message=amount>1?`${amount}장 받음`:'1장 뽑음';return game})}
-function renderResult(){show('resultScreen');const game=roomData.game;const winner=roomData.players?.[game?.winnerUid];$('winnerLabel').textContent=winner?`🏆 ${escapeHtml(winner.name)} 승리!`:'게임 종료';$('resultPlayers').innerHTML=sortedPlayers().map(p=>{const n=game?.hands?.[p.uid]?.length??0,bankrupt=game?.eliminated?.[p.uid];return`<div class="playerRow ${p.uid===game?.winnerUid?'me':''}"><div class="playerName">${escapeHtml(p.name)}</div><strong>${p.uid===game?.winnerUid?'🏆 승리':bankrupt?'💸 파산':n+'장'}</strong></div>`}).join('')}
-async function backToLobby(){if(roomData.hostUid===user.uid){const players=roomData.players||{},updates={status:'lobby',game:null};for(const uid of Object.keys(players))updates[`players/${uid}/ready`]=false;await update(ref(db,'rooms/'+roomCode),updates)}else show('lobbyScreen')}
-async function leaveRoom(){if(!roomCode||!user){show('homeScreen');return}const code=roomCode,wasHost=roomData?.hostUid===user.uid;await remove(ref(db,`rooms/${code}/players/${user.uid}`));if(wasHost){const others=sortedPlayers().filter(p=>p.uid!==user.uid);if(others.length)await update(ref(db,`rooms/${code}`),{hostUid:others[0].uid,status:'lobby',game:null});else await remove(ref(db,`rooms/${code}`))}if(roomUnsub){roomUnsub();roomUnsub=null}roomCode=null;roomData=null;pendingSeven=false;show('homeScreen')}
-function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]))}
-$('createRoomBtn').onclick=createRoom;$('joinRoomBtn').onclick=joinRoom;$('readyBtn').onclick=toggleReady;$('startOnlineBtn').onclick=startGame;$('drawBtn').onclick=drawCardsAction;$('leaveRoomBtn').onclick=leaveRoom;$('leaveGameBtn').onclick=leaveRoom;$('resultLeaveBtn').onclick=leaveRoom;$('backLobbyBtn').onclick=backToLobby;$('copyRoomBtn').onclick=async()=>{if(!roomCode)return;try{await navigator.clipboard.writeText(roomCode);$('copyRoomBtn').textContent='✓ 복사됨';setTimeout(()=>$('copyRoomBtn').textContent='복사',800)}catch(e){prompt('방 코드 복사',roomCode)}};document.querySelectorAll('.suitbtn').forEach(btn=>btn.onclick=()=>chooseSuit(btn.dataset.suit));document.querySelectorAll('.suitBtn').forEach(btn=>btn.onclick=()=>chooseSuit(btn.dataset.suit));$('roomCodeInput').addEventListener('input',e=>e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6));boot();
+
+// ------------------------------------------------------
+// Firebase 로그인
+// ------------------------------------------------------
+
+connectionBadge.textContent = "연결 중...";
+
+signInAnonymously(auth).catch((error) => {
+  console.error(error);
+  connectionBadge.textContent = "Firebase 연결 실패";
+});
+
+onAuthStateChanged(auth, (user) => {
+  if (!user) return;
+
+  uid = user.uid;
+  connectionBadge.textContent = "온라인 연결됨";
+});
+
+// ------------------------------------------------------
+// 유틸
+// ------------------------------------------------------
+
+function generateRoomCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  let code = "";
+
+  for (let i = 0; i < 5; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+
+  return code;
+}
+
+function sanitizeName(name) {
+  name = String(name || "").trim();
+
+  if (!name) {
+    return "PLAYER";
+  }
+
+  return name.slice(0, 12);
+}
+
+function shuffle(array) {
+  const result = [...array];
+
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+
+  return result;
+}
+
+// ------------------------------------------------------
+// 카드 덱
+// ------------------------------------------------------
+
+function createDeck() {
+  const suits = ["♠", "♥", "♦", "♣"];
+
+  const ranks = [
+    "A",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "J",
+    "Q",
+    "K"
+  ];
+
+  const deck = [];
+
+  for (const suit of suits) {
+    for (const rank of ranks) {
+      deck.push({
+        suit,
+        rank,
+        id: `${suit}-${rank}-${Math.random()}`
+      });
+    }
+  }
+
+  return shuffle(deck);
+}
+
+function cardText(card) {
+  if (!card) return "?";
+
+  return `${card.suit}${card.rank}`;
+}
+
+function isRed(card) {
+  return card && (card.suit === "♥" || card.suit === "♦");
+}
+
+// ------------------------------------------------------
+// 원카드 규칙
+// ------------------------------------------------------
+
+function canPlayCard(card, topCard) {
+  if (!card || !topCard) return false;
+
+  if (card.suit === topCard.suit) return true;
+
+  if (card.rank === topCard.rank) return true;
+
+  return false;
+}
+
+function nextPlayerIndex(currentIndex, direction, playerCount, amount = 1) {
+  let index = currentIndex;
+
+  for (let i = 0; i < amount; i++) {
+    index += direction;
+
+    if (index >= playerCount) {
+      index = 0;
+    }
+
+    if (index < 0) {
+      index = playerCount - 1;
+    }
+  }
+
+  return index;
+}
+
+// ------------------------------------------------------
+// 방 생성
+// ------------------------------------------------------
+
+createBtn.addEventListener("click", async () => {
+  if (!uid) {
+    alert("Firebase 연결 중입니다.");
+    return;
+  }
+
+  const name = sanitizeName(createName.value);
+
+  const maxPlayers = Math.max(
+    2,
+    Math.min(4, Number(createMaxPlayers.value || 2))
+  );
+
+  let code;
+
+  while (true) {
+    code = generateRoomCode();
+
+    const testRef = ref(db, `rooms/${code}`);
+
+    const snap = await get(testRef);
+
+    if (!snap.exists()) {
+      break;
+    }
+  }
+
+  roomCode = code;
+  roomRef = ref(db, `rooms/${roomCode}`);
+
+  const roomData = {
+    host: uid,
+
+    state: "lobby",
+
+    maxPlayers,
+
+    createdAt: Date.now(),
+
+    players: {
+      [uid]: {
+        name,
+        joinedAt: Date.now()
+      }
+    }
+  };
+
+  await set(roomRef, roomData);
+
+  isHost = true;
+
+  subscribeRoom();
+
+  showScreen(lobbyScreen);
+});
+
+// ------------------------------------------------------
+// 방 참가
+// ------------------------------------------------------
+
+joinBtn.addEventListener("click", async () => {
+  if (!uid) {
+    alert("Firebase 연결 중입니다.");
+    return;
+  }
+
+  const name = sanitizeName(joinName.value);
+
+  const code = String(joinCode.value || "")
+    .trim()
+    .toUpperCase();
+
+  if (!code) {
+    alert("방 코드를 입력하세요.");
+    return;
+  }
+
+  const targetRef = ref(db, `rooms/${code}`);
+
+  const snap = await get(targetRef);
+
+  if (!snap.exists()) {
+    alert("존재하지 않는 방입니다.");
+    return;
+  }
+
+  const room = snap.val();
+
+  if (room.state !== "lobby") {
+    alert("이미 게임이 시작된 방입니다.");
+    return;
+  }
+
+  const players = room.players || {};
+
+  const playerCount = Object.keys(players).length;
+
+  if (playerCount >= room.maxPlayers) {
+    alert("방이 가득 찼습니다.");
+    return;
+  }
+
+  await set(ref(db, `rooms/${code}/players/${uid}`), {
+    name,
+    joinedAt: Date.now()
+  });
+
+  roomCode = code;
+  roomRef = targetRef;
+
+  isHost = room.host === uid;
+
+  subscribeRoom();
+
+  showScreen(lobbyScreen);
+});
+
+// ------------------------------------------------------
+// 방 구독
+// ------------------------------------------------------
+
+function subscribeRoom() {
+  if (!roomRef) return;
+
+  if (roomUnsubscribe) {
+    roomUnsubscribe();
+  }
+
+  roomUnsubscribe = onValue(roomRef, (snapshot) => {
+    if (!snapshot.exists()) {
+      alert("방이 종료되었습니다.");
+
+      cleanupRoomState();
+
+      showScreen(homeScreen);
+
+      return;
+    }
+
+    const room = snapshot.val();
+
+    latestRoom = room;
+
+    isHost = room.host === uid;
+
+    renderRoom(room);
+  });
+}
+
+// ------------------------------------------------------
+// 방 렌더링
+// ------------------------------------------------------
+
+function renderRoom(room) {
+  roomCodeText.textContent = roomCode || "-";
+  gameRoomCode.textContent = roomCode || "-";
+
+  if (room.state === "lobby") {
+    renderLobby(room);
+
+    showScreen(lobbyScreen);
+
+    return;
+  }
+
+  if (room.state === "playing") {
+    renderGame(room);
+
+    showScreen(gameScreen);
+
+    return;
+  }
+
+  if (room.state === "finished") {
+    renderResult(room);
+
+    showScreen(resultScreen);
+  }
+}
+
+// ------------------------------------------------------
+// 로비
+// ------------------------------------------------------
+
+function getOrderedPlayers(room) {
+  const players = room.players || {};
+
+  return Object.entries(players)
+    .map(([id, player]) => ({
+      id,
+      ...player
+    }))
+    .sort((a, b) => {
+      return (a.joinedAt || 0) - (b.joinedAt || 0);
+    });
+}
+
+function renderLobby(room) {
+  const players = getOrderedPlayers(room);
+
+  lobbyPlayers.innerHTML = "";
+
+  for (const player of players) {
+    const item = document.createElement("div");
+
+    item.className = "player-item";
+
+    item.textContent =
+      `${player.name}` +
+      (player.id === room.host ? " 👑" : "") +
+      (player.id === uid ? " (나)" : "");
+
+    lobbyPlayers.appendChild(item);
+  }
+
+  if (isHost) {
+    startBtn.style.display = "block";
+
+    startBtn.disabled = players.length < 2;
+
+    startBtn.textContent =
+      players.length < 2
+        ? "플레이어를 기다리는 중..."
+        : "게임 시작";
+  } else {
+    startBtn.style.display = "none";
+  }
+}
+
+// ------------------------------------------------------
+// 게임 시작
+// ------------------------------------------------------
+
+startBtn.addEventListener("click", async () => {
+  if (!latestRoom || !isHost) return;
+
+  const players = getOrderedPlayers(latestRoom);
+
+  if (players.length < 2) {
+    alert("최소 2명이 필요합니다.");
+    return;
+  }
+
+  const deck = createDeck();
+
+  const hands = {};
+
+  for (const player of players) {
+    hands[player.id] = [];
+  }
+
+  // 시작 카드 5장
+  for (let i = 0; i < 5; i++) {
+    for (const player of players) {
+      const card = deck.pop();
+
+      hands[player.id].push(card);
+    }
+  }
+
+  let firstCard = deck.pop();
+
+  // 첫 카드가 특수카드면 일반 숫자 카드가 나올 때까지 교환
+  while (
+    firstCard &&
+    ["J", "Q", "K", "A"].includes(firstCard.rank)
+  ) {
+    deck.unshift(firstCard);
+
+    firstCard = deck.pop();
+  }
+
+  const game = {
+    playerOrder: players.map((p) => p.id),
+
+    currentPlayer: 0,
+
+    direction: 1,
+
+    deck,
+
+    discard: [firstCard],
+
+    hands,
+
+    winner: null,
+
+    message: `${players[0].name}의 차례`
+  };
+
+  await update(roomRef, {
+    state: "playing",
+    game
+  });
+});
+
+// ------------------------------------------------------
+// 게임 화면
+// ------------------------------------------------------
+
+function renderGame(room) {
+  const game = room.game;
+
+  if (!game) return;
+
+  const players = getOrderedPlayers(room);
+
+  const currentUid =
+    game.playerOrder?.[game.currentPlayer];
+
+  const currentPlayer =
+    room.players?.[currentUid];
+
+  gameStatus.textContent =
+    currentUid === uid
+      ? "당신의 차례"
+      : `${currentPlayer?.name || "상대"}의 차례`;
+
+  gamePlayers.innerHTML = "";
+
+  for (const player of players) {
+    const hand =
+      game.hands?.[player.id] || [];
+
+    const item = document.createElement("div");
+
+    item.className = "player-item";
+
+    if (player.id === currentUid) {
+      item.classList.add("current");
+    }
+
+    item.textContent =
+      `${player.name} · ${hand.length}장` +
+      (player.id === uid ? " (나)" : "");
+
+    gamePlayers.appendChild(item);
+  }
+
+  const discard =
+    game.discard || [];
+
+  const topCard =
+    discard[discard.length - 1];
+
+  discardPile.innerHTML = "";
+
+  if (topCard) {
+    const card = document.createElement("div");
+
+    card.className = "card";
+
+    if (isRed(topCard)) {
+      card.classList.add("red");
+    }
+
+    card.textContent = cardText(topCard);
+
+    discardPile.appendChild(card);
+  }
+
+  drawPile.textContent =
+    `덱 ${game.deck?.length || 0}장`;
+
+  renderHand(room);
+}
+
+// ------------------------------------------------------
+// 손패 렌더링
+// ------------------------------------------------------
+
+function renderHand(room) {
+  const game = room.game;
+
+  const hand =
+    game?.hands?.[uid] || [];
+
+  const discard =
+    game?.discard || [];
+
+  const topCard =
+    discard[discard.length - 1];
+
+  const currentUid =
+    game?.playerOrder?.[game.currentPlayer];
+
+  const myTurn =
+    currentUid === uid;
+
+  handArea.innerHTML = "";
+
+  hand.forEach((card, index) => {
+    const button =
+      document.createElement("button");
+
+    button.className = "card hand-card";
+
+    if (isRed(card)) {
+      button.classList.add("red");
+    }
+
+    button.textContent =
+      cardText(card);
+
+    const playable =
+      myTurn &&
+      canPlayCard(card, topCard);
+
+    if (!playable) {
+      button.disabled = true;
+    }
+
+    button.addEventListener("click", () => {
+      playCard(index);
+    });
+
+    handArea.appendChild(button);
+  });
+
+  const drawButton =
+    document.createElement("button");
+
+  drawButton.className = "draw-button";
+
+  drawButton.textContent =
+    "카드 뽑기";
+
+  drawButton.disabled =
+    !myTurn;
+
+  drawButton.addEventListener("click", drawCard);
+
+  handArea.appendChild(drawButton);
+}
+
+// ------------------------------------------------------
+// 카드 내기
+// ------------------------------------------------------
+
+async function playCard(cardIndex) {
+  if (!latestRoom?.game) return;
+
+  const room = latestRoom;
+
+  const game = structuredClone(room.game);
+
+  const order =
+    game.playerOrder || [];
+
+  const playerCount =
+    order.length;
+
+  if (playerCount < 2) return;
+
+  const currentUid =
+    order[game.currentPlayer];
+
+  if (currentUid !== uid) {
+    return;
+  }
+
+  const hand =
+    game.hands?.[uid];
+
+  if (!hand) return;
+
+  const card =
+    hand[cardIndex];
+
+  const discard =
+    game.discard || [];
+
+  const topCard =
+    discard[discard.length - 1];
+
+  if (!canPlayCard(card, topCard)) {
+    return;
+  }
+
+  hand.splice(cardIndex, 1);
+
+  game.discard.push(card);
+
+  // --------------------------------------------------
+  // 승리 판정
+  // --------------------------------------------------
+
+  if (hand.length === 0) {
+    game.winner = uid;
+
+    const winnerName =
+      room.players?.[uid]?.name || "PLAYER";
+
+    game.message =
+      `${winnerName} 승리!`;
+
+    await update(roomRef, {
+      state: "finished",
+      game
+    });
+
+    return;
+  }
+
+  // --------------------------------------------------
+  // 특수 카드
+  // --------------------------------------------------
+
+  let skip = false;
+
+  if (card.rank === "J") {
+    // J : 다음 플레이어 스킵
+    skip = true;
+  }
+
+  else if (card.rank === "Q") {
+    /*
+      Q : 방향 반전
+
+      ★ 2인 버그 수정 ★
+
+      기존 코드에서는 2명일 때
+      방향 반전과 skip을 동시에 적용해서
+      플레이어가 자기 턴을 다시 받는 문제가 있었다.
+
+      이제 Q는 인원수와 관계없이
+      방향만 반전한다.
+    */
+
+    game.direction *= -1;
+  }
+
+  else if (card.rank === "K") {
+    // K : 추가 효과 없음
+  }
+
+  else if (card.rank === "A") {
+    // A : 다음 플레이어 스킵
+    skip = true;
+  }
+
+  // --------------------------------------------------
+  // 다음 플레이어 계산
+  // --------------------------------------------------
+
+  let moveAmount = 1;
+
+  if (skip) {
+    moveAmount = 2;
+  }
+
+  game.currentPlayer =
+    nextPlayerIndex(
+      game.currentPlayer,
+      game.direction,
+      playerCount,
+      moveAmount
+    );
+
+  const nextUid =
+    order[game.currentPlayer];
+
+  const nextName =
+    room.players?.[nextUid]?.name || "PLAYER";
+
+  game.message =
+    `${nextName}의 차례`;
+
+  await update(
+    ref(db, `rooms/${roomCode}/game`),
+    game
+  );
+}
+
+// ------------------------------------------------------
+// 카드 뽑기
+// ------------------------------------------------------
+
+async function drawCard() {
+  if (!latestRoom?.game) return;
+
+  const room =
+    latestRoom;
+
+  const game =
+    structuredClone(room.game);
+
+  const order =
+    game.playerOrder || [];
+
+  const currentUid =
+    order[game.currentPlayer];
+
+  if (currentUid !== uid) {
+    return;
+  }
+
+  if (!game.deck) {
+    game.deck = [];
+  }
+
+  if (!game.discard) {
+    game.discard = [];
+  }
+
+  // 덱이 없으면 버린 카드 재활용
+  if (game.deck.length === 0) {
+    if (game.discard.length <= 1) {
+      alert("더 이상 뽑을 카드가 없습니다.");
+
+      return;
+    }
+
+    const topCard =
+      game.discard.pop();
+
+    game.deck =
+      shuffle(game.discard);
+
+    game.discard =
+      [topCard];
+  }
+
+  const card =
+    game.deck.pop();
+
+  if (!game.hands[uid]) {
+    game.hands[uid] = [];
+  }
+
+  game.hands[uid].push(card);
+
+  game.currentPlayer =
+    nextPlayerIndex(
+      game.currentPlayer,
+      game.direction,
+      order.length,
+      1
+    );
+
+  const nextUid =
+    order[game.currentPlayer];
+
+  const nextName =
+    room.players?.[nextUid]?.name || "PLAYER";
+
+  game.message =
+    `${nextName}의 차례`;
+
+  await update(
+    ref(db, `rooms/${roomCode}/game`),
+    game
+  );
+}
+
+// ------------------------------------------------------
+// 결과 화면
+// ------------------------------------------------------
+
+function renderResult(room) {
+  const winnerUid =
+    room.game?.winner;
+
+  const winner =
+    room.players?.[winnerUid];
+
+  if (winnerUid === uid) {
+    resultTitle.textContent =
+      "승리!";
+
+    resultText.textContent =
+      "당신이 모든 카드를 먼저 사용했습니다.";
+  }
+
+  else {
+    resultTitle.textContent =
+      "패배";
+
+    resultText.textContent =
+      `${winner?.name || "상대"} 승리`;
+  }
+}
+
+// ------------------------------------------------------
+// 방 나가기
+// ------------------------------------------------------
+
+leaveBtn.addEventListener("click", async () => {
+  await leaveRoom();
+
+  showScreen(homeScreen);
+});
+
+async function leaveRoom() {
+  if (!roomCode || !uid) {
+    cleanupRoomState();
+
+    return;
+  }
+
+  try {
+    const snap =
+      await get(ref(db, `rooms/${roomCode}`));
+
+    if (!snap.exists()) {
+      cleanupRoomState();
+
+      return;
+    }
+
+    const room =
+      snap.val();
+
+    if (room.host === uid) {
+      await remove(
+        ref(db, `rooms/${roomCode}`)
+      );
+    }
+
+    else {
+      await remove(
+        ref(
+          db,
+          `rooms/${roomCode}/players/${uid}`
+        )
+      );
+    }
+  }
+
+  catch (error) {
+    console.error(error);
+  }
+
+  cleanupRoomState();
+}
+
+// ------------------------------------------------------
+// 홈으로
+// ------------------------------------------------------
+
+backHomeBtn.addEventListener("click", async () => {
+  if (roomCode) {
+    await leaveRoom();
+  }
+
+  showScreen(homeScreen);
+});
+
+// ------------------------------------------------------
+// 상태 초기화
+// ------------------------------------------------------
+
+function cleanupRoomState() {
+  if (roomUnsubscribe) {
+    roomUnsubscribe();
+
+    roomUnsubscribe = null;
+  }
+
+  roomCode = null;
+  roomRef = null;
+  latestRoom = null;
+  isHost = false;
+}
+
+// ------------------------------------------------------
+// 방 코드 자동 대문자
+// ------------------------------------------------------
+
+joinCode.addEventListener("input", () => {
+  joinCode.value =
+    joinCode.value
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "")
+      .slice(0, 5);
+});
+
+// ------------------------------------------------------
+// 시작
+// ------------------------------------------------------
+
+showScreen(homeScreen);
