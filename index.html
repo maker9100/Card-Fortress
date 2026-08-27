@@ -7,182 +7,755 @@
 <title>CARD FORTRESS ONLINE</title>
 <link rel="stylesheet" href="./styles.css">
 </head>
+
 <body>
+
 <main class="app">
-  <header class="brand">
-    <div class="logo">♠</div>
-    <div><h1>CARD FORTRESS</h1><p>ONLINE</p></div>
-    <div id="connectionBadge" class="dot">●</div>
-  </header>
 
-  <section id="homeScreen" class="screen active panel">
-    <h2>온라인 플레이</h2>
-    <p class="muted">친구들과 각자 자기 기기에서 접속합니다.</p>
+<header class="brand">
+  <div class="logo">♠</div>
+  <div>
+    <h1>CARD FORTRESS</h1>
+    <p>ONLINE</p>
+  </div>
+  <div id="connectionBadge" class="dot">●</div>
+</header>
 
-    <div class="accountbox">
-      <div id="accountStatus" class="muted">게스트 연결 준비 중...</div>
-      <button id="googleLoginBtn" class="googlebtn" type="button">
-        <span class="googleG">G</span> Google 계정으로 로그인
-      </button>
-      <button id="googleLogoutBtn" class="secondary" type="button" style="display:none">게스트로 전환</button>
+<!-- =========================
+     HOME
+========================= -->
+
+<section id="homeScreen" class="screen active panel">
+
+  <h2>온라인 플레이</h2>
+
+  <p class="muted">
+    친구들과 각자 자기 기기에서 접속합니다.
+  </p>
+
+  <div class="accountbox">
+
+    <div id="accountStatus" class="muted">
+      게스트 연결 준비 중...
     </div>
 
-    <label class="field"><span>닉네임</span><input id="nicknameInput" maxlength="12" placeholder="닉네임"></label>
-    <button id="createRoomBtn" class="primary">방 만들기</button>
-    <div class="divider">또는</div>
-    <label class="field"><span>방 코드</span><input id="roomCodeInput" maxlength="6" placeholder="ABC123"></label>
-    <button id="joinRoomBtn" class="secondary">방 참가</button>
-    <div id="setupError" class="error"></div>
-    <a class="linkbtn" href="./local.html">📱 로컬 플레이</a>
-  </section>
+    <button
+      id="googleLoginBtn"
+      class="googlebtn"
+      type="button"
+    >
+      <span class="googleG">G</span>
+      Google 계정으로 로그인
+    </button>
 
-  <section id="lobbyScreen" class="screen panel">
-    <div class="row">
-      <div><div class="muted">방 코드</div><div id="roomCodeLabel" class="roomcode">------</div></div>
-      <button id="copyRoomBtn" class="tiny">복사</button>
-    </div>
+    <button
+      id="googleLogoutBtn"
+      class="secondary"
+      type="button"
+      style="display:none"
+    >
+      게스트로 전환
+    </button>
 
-    <h2>대기실</h2>
-    <div id="playerList" class="list"></div>
+  </div>
 
-    <div class="modebox">
-      <div class="muted">최대 인원</div>
-      <div class="modegrid max-player-grid">
-        <button class="maxpbtn selected" data-maxp="2">2인</button>
-        <button class="maxpbtn" data-maxp="3">3인</button>
-        <button class="maxpbtn" data-maxp="4">4인</button>
-        <button class="maxpbtn" data-maxp="5">5인</button>
-        <button class="maxpbtn" data-maxp="6">6인</button>
-      </div>
-      <div id="maxPlayerHelp" class="muted">방장만 변경 가능</div>
-    </div>
+  <label class="field">
 
-    <div class="modebox">
-      <div class="muted">온라인 게임 모드</div>
-      <div class="modegrid">
-        <button class="modebtn selected" data-mode="onecard">⚡ 원카드</button>
-        <button class="modebtn" data-mode="poker">♠ 포커</button>
-        <button class="modebtn" data-mode="joker">🃏 조커뽑기</button>
-        <button class="modebtn" data-mode="doubt">🎭 다우트</button>
-      </div>
-      <div id="modeHelp" class="muted"></div>
-    </div>
+    <span>닉네임</span>
 
-    <div class="controls">
-      <button id="readyBtn" class="secondary">준비</button>
-      <button id="startOnlineBtn" class="primary" style="display:none">게임 시작</button>
-      <button id="leaveRoomBtn" class="danger">방 나가기</button>
-    </div>
-  </section>
+    <input
+      id="nicknameInput"
+      maxlength="12"
+      placeholder="닉네임"
+    >
 
-  <!-- ONE CARD -->
-  <section id="onecardScreen" class="screen">
-    <div class="gamehead">
-      <div><div id="ocTurnLabel" class="pill"></div><div id="gameRoomLabel" class="muted"></div></div>
-      <button class="tiny dangerText" id="leaveGameBtn">나가기</button>
-    </div>
-    <div id="ocOpponents" class="opponents"></div>
-    <div class="table">
-      <div><div class="muted">현재 카드</div><div id="ocTopCard" class="single"></div><div id="ocChosenSuit" class="chosen"></div></div>
-      <button id="ocDrawBtn" class="deck">🂠<small>뽑기</small></button>
-    </div>
-    <div id="ocAttackInfo" class="attack"></div>
-    <div id="ocMessage" class="msg"></div>
-    <div class="handbox"><div class="row"><span>내 패</span><strong id="ocMyCount"></strong></div><div id="ocHand" class="hand"></div></div>
-  </section>
+  </label>
 
-  <section id="suitScreen" class="screen panel center">
-    <h2>무늬 선택</h2>
-    <div class="suitgrid">
-      <button class="suitBtn" data-suit="♠">♠</button><button class="suitBtn red" data-suit="♥">♥</button>
-      <button class="suitBtn red" data-suit="♦">♦</button><button class="suitBtn" data-suit="♣">♣</button>
-    </div>
-  </section>
-
-  <!-- POKER -->
-  <section id="pokerScreen" class="screen">
-    <div class="gamehead">
-      <div><div id="pokerPhase" class="pill">포커</div><div id="pokerInfo" class="muted"></div></div>
-      <button class="tiny dangerText" id="pokerLeaveBtn">나가기</button>
-    </div>
-    <div id="pokerPlayers" class="list"></div>
-    <div class="panel gamepanel">
-      <h2 id="pokerTitle">포커</h2>
-      <div id="pokerMessage" class="msg"></div>
-      <div id="pokerCards" class="hand centerhand"></div>
-      <div id="pokerActions" class="controls"></div>
-    </div>
-  </section>
-
-  <!-- JOKER DRAW -->
-  <section id="jokerScreen" class="screen">
-    <div class="gamehead">
-      <div><div id="jokerTurn" class="pill"></div><div id="jokerRoom" class="muted"></div></div>
-      <button class="tiny dangerText" id="jokerLeaveBtn">나가기</button>
-    </div>
-    <div id="jokerPlayers" class="list"></div>
-    <div class="panel gamepanel">
-      <h2>🃏 조커뽑기</h2>
-      <div id="jokerMessage" class="msg"></div>
-
-      <div class="handbox">
-        <div class="row"><span>내 패</span><strong id="jokerCount"></strong></div>
-        <div id="jokerHand" class="hand"></div>
-        <button id="jokerShuffleBtn" class="secondary">🔀 패 섞기</button>
-      </div>
-
-      <div class="handbox" style="margin-top:10px">
-        <div id="jokerTargetTitle" class="muted">상대 카드에서 한 장을 뽑으세요.</div>
-        <div id="jokerTarget" class="hand"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- DOUBT -->
-  <section id="doubtScreen" class="screen">
-    <div class="gamehead">
-      <div><div id="doubtTurn" class="pill"></div><div id="doubtRoom" class="muted"></div></div>
-      <button class="tiny dangerText" id="doubtLeaveBtn">나가기</button>
-    </div>
-    <div id="doubtPlayers" class="list"></div>
-    <div class="panel gamepanel">
-      <h2>🎭 다우트</h2>
-      <div id="doubtCenter" class="doubtcenter"></div>
-      <div id="doubtMessage" class="msg"></div>
-      <div id="doubtControls"></div>
-      <div class="handbox"><div class="row"><span>내 패</span><strong id="doubtCount"></strong></div><div id="doubtHand" class="hand"></div></div>
-    </div>
-  </section>
-
-  <section id="resultScreen" class="screen panel center">
-    <div class="crown">♛</div>
-    <h2 id="winnerLabel">승리!</h2>
-    <div id="resultPlayers" class="list"></div>
-    <div class="controls">
-      <button id="backLobbyBtn" class="primary">대기실로</button>
-      <button id="resultLeaveBtn" class="secondary">메인으로</button>
-    </div>
-  </section>
-</main>
-
-  <!-- ROOM CHAT -->
-  <button id="chatFab" class="chat-fab" type="button" style="display:none" aria-label="채팅 열기">
-    💬 <span id="chatUnread" class="chat-unread" style="display:none">0</span>
+  <button
+    id="createRoomBtn"
+    class="primary"
+    type="button"
+  >
+    방 만들기
   </button>
 
-  <aside id="chatPanel" class="chat-panel" aria-hidden="true">
-    <div class="chat-head">
-      <div><strong>💬 방 채팅</strong><div id="chatRoomLabel" class="muted">방 ------</div></div>
-      <button id="chatCloseBtn" class="tiny" type="button">닫기</button>
-    </div>
-    <div id="chatMessages" class="chat-messages"><div class="chat-empty">아직 메시지가 없습니다.</div></div>
-    <div class="chat-compose">
-      <input id="chatInput" maxlength="120" autocomplete="off" placeholder="메시지 입력 (AI 욕설 검열)" aria-label="채팅 메시지">
-      <button id="chatSendBtn" class="primary" type="button">전송</button>
-    </div>
-    <div class="chat-note">욕설·비속어는 로컬 필터 + AI로 검사합니다.</div>
-  </aside>
+  <div class="divider">
+    또는
+  </div>
 
-<script type="module" src="./online.js"></script>
+  <label class="field">
+
+    <span>방 코드</span>
+
+    <input
+      id="roomCodeInput"
+      maxlength="6"
+      placeholder="ABC123"
+      autocomplete="off"
+    >
+
+  </label>
+
+  <button
+    id="joinRoomBtn"
+    class="secondary"
+    type="button"
+  >
+    방 참가
+  </button>
+
+  <div id="setupError" class="error"></div>
+
+  <a
+    class="linkbtn"
+    href="./local.html"
+  >
+    📱 로컬 플레이
+  </a>
+
+</section>
+
+<!-- =========================
+     LOBBY
+========================= -->
+
+<section id="lobbyScreen" class="screen panel">
+
+  <div class="row">
+
+    <div>
+
+      <div class="muted">
+        방 코드
+      </div>
+
+      <div
+        id="roomCodeLabel"
+        class="roomcode"
+      >
+        ------
+      </div>
+
+    </div>
+
+    <button
+      id="copyRoomBtn"
+      class="tiny"
+      type="button"
+    >
+      복사
+    </button>
+
+  </div>
+
+  <h2>대기실</h2>
+
+  <div
+    id="playerList"
+    class="list"
+  ></div>
+
+  <!-- 인원 -->
+
+  <div class="modebox">
+
+    <div class="muted">
+      최대 인원
+    </div>
+
+    <div class="modegrid max-player-grid">
+
+      <button
+        class="maxpbtn selected"
+        data-maxp="2"
+        type="button"
+      >
+        2인
+      </button>
+
+      <button
+        class="maxpbtn"
+        data-maxp="3"
+        type="button"
+      >
+        3인
+      </button>
+
+      <button
+        class="maxpbtn"
+        data-maxp="4"
+        type="button"
+      >
+        4인
+      </button>
+
+      <button
+        class="maxpbtn"
+        data-maxp="5"
+        type="button"
+      >
+        5인
+      </button>
+
+      <button
+        class="maxpbtn"
+        data-maxp="6"
+        type="button"
+      >
+        6인
+      </button>
+
+    </div>
+
+    <div
+      id="maxPlayerHelp"
+      class="muted"
+    >
+      방장만 변경 가능
+    </div>
+
+  </div>
+
+  <!-- 게임 선택 -->
+
+  <div class="modebox">
+
+    <div class="muted">
+      온라인 게임 모드
+    </div>
+
+    <div class="modegrid">
+
+      <button
+        class="modebtn selected"
+        data-mode="onecard"
+        type="button"
+      >
+        ⚡ 원카드
+      </button>
+
+      <button
+        class="modebtn"
+        data-mode="poker"
+        type="button"
+      >
+        ♠ 포커
+      </button>
+
+      <button
+        class="modebtn"
+        data-mode="joker"
+        type="button"
+      >
+        🃏 조커뽑기
+      </button>
+
+    </div>
+
+    <div
+      id="modeHelp"
+      class="muted"
+    ></div>
+
+  </div>
+
+  <div class="controls">
+
+    <button
+      id="readyBtn"
+      class="secondary"
+      type="button"
+    >
+      준비
+    </button>
+
+    <button
+      id="startOnlineBtn"
+      class="primary"
+      type="button"
+      style="display:none"
+    >
+      게임 시작
+    </button>
+
+    <button
+      id="leaveRoomBtn"
+      class="danger"
+      type="button"
+    >
+      방 나가기
+    </button>
+
+  </div>
+
+</section>
+
+
+<!-- =========================
+     ONE CARD
+========================= -->
+
+<section id="onecardScreen" class="screen">
+
+  <div class="gamehead">
+
+    <div>
+
+      <div
+        id="ocTurnLabel"
+        class="pill"
+      ></div>
+
+      <div
+        id="gameRoomLabel"
+        class="muted"
+      ></div>
+
+    </div>
+
+    <button
+      class="tiny dangerText"
+      id="leaveGameBtn"
+      type="button"
+    >
+      나가기
+    </button>
+
+  </div>
+
+  <div
+    id="ocOpponents"
+    class="opponents"
+  ></div>
+
+  <div class="table">
+
+    <div>
+
+      <div class="muted">
+        현재 카드
+      </div>
+
+      <div
+        id="ocTopCard"
+        class="single"
+      ></div>
+
+      <div
+        id="ocChosenSuit"
+        class="chosen"
+      ></div>
+
+    </div>
+
+    <button
+      id="ocDrawBtn"
+      class="deck"
+      type="button"
+    >
+      🂠
+      <small>뽑기</small>
+    </button>
+
+  </div>
+
+  <div
+    id="ocAttackInfo"
+    class="attack"
+  ></div>
+
+  <div
+    id="ocMessage"
+    class="msg"
+  ></div>
+
+  <div class="handbox">
+
+    <div class="row">
+
+      <span>
+        내 패
+      </span>
+
+      <strong
+        id="ocMyCount"
+      ></strong>
+
+    </div>
+
+    <div
+      id="ocHand"
+      class="hand"
+    ></div>
+
+  </div>
+
+</section>
+
+
+<!-- =========================
+     SUIT SELECT
+========================= -->
+
+<section
+  id="suitScreen"
+  class="screen panel center"
+>
+
+  <h2>무늬 선택</h2>
+
+  <div class="suitgrid">
+
+    <button
+      class="suitBtn"
+      data-suit="♠"
+      type="button"
+    >
+      ♠
+    </button>
+
+    <button
+      class="suitBtn red"
+      data-suit="♥"
+      type="button"
+    >
+      ♥
+    </button>
+
+    <button
+      class="suitBtn red"
+      data-suit="♦"
+      type="button"
+    >
+      ♦
+    </button>
+
+    <button
+      class="suitBtn"
+      data-suit="♣"
+      type="button"
+    >
+      ♣
+    </button>
+
+  </div>
+
+</section>
+
+
+<!-- =========================
+     POKER
+========================= -->
+
+<section id="pokerScreen" class="screen">
+
+  <div class="gamehead">
+
+    <div>
+
+      <div
+        id="pokerPhase"
+        class="pill"
+      >
+        포커
+      </div>
+
+      <div
+        id="pokerInfo"
+        class="muted"
+      ></div>
+
+    </div>
+
+    <button
+      class="tiny dangerText"
+      id="pokerLeaveBtn"
+      type="button"
+    >
+      나가기
+    </button>
+
+  </div>
+
+  <div
+    id="pokerPlayers"
+    class="list"
+  ></div>
+
+  <div class="panel gamepanel">
+
+    <h2 id="pokerTitle">
+      포커
+    </h2>
+
+    <div
+      id="pokerMessage"
+      class="msg"
+    ></div>
+
+    <div
+      id="pokerCards"
+      class="hand centerhand"
+    ></div>
+
+    <div
+      id="pokerActions"
+      class="controls"
+    ></div>
+
+  </div>
+
+</section>
+
+
+<!-- =========================
+     JOKER DRAW
+========================= -->
+
+<section id="jokerScreen" class="screen">
+
+  <div class="gamehead">
+
+    <div>
+
+      <div
+        id="jokerTurn"
+        class="pill"
+      ></div>
+
+      <div
+        id="jokerRoom"
+        class="muted"
+      ></div>
+
+    </div>
+
+    <button
+      class="tiny dangerText"
+      id="jokerLeaveBtn"
+      type="button"
+    >
+      나가기
+    </button>
+
+  </div>
+
+  <div
+    id="jokerPlayers"
+    class="list"
+  ></div>
+
+  <div class="panel gamepanel">
+
+    <h2>
+      🃏 조커뽑기
+    </h2>
+
+    <div
+      id="jokerMessage"
+      class="msg"
+    ></div>
+
+    <div class="handbox">
+
+      <div class="row">
+
+        <span>
+          내 패
+        </span>
+
+        <strong
+          id="jokerCount"
+        ></strong>
+
+      </div>
+
+      <div
+        id="jokerHand"
+        class="hand"
+      ></div>
+
+      <button
+        id="jokerShuffleBtn"
+        class="secondary"
+        type="button"
+      >
+        🔀 패 섞기
+      </button>
+
+    </div>
+
+    <div
+      class="handbox"
+      style="margin-top:10px"
+    >
+
+      <div
+        id="jokerTargetTitle"
+        class="muted"
+      >
+        상대 카드에서 한 장을 뽑으세요.
+      </div>
+
+      <div
+        id="jokerTarget"
+        class="hand"
+      ></div>
+
+    </div>
+
+  </div>
+
+</section>
+
+
+<!-- =========================
+     RESULT
+========================= -->
+
+<section
+  id="resultScreen"
+  class="screen panel center"
+>
+
+  <div class="crown">
+    ♛
+  </div>
+
+  <h2 id="winnerLabel">
+    승리!
+  </h2>
+
+  <div
+    id="resultPlayers"
+    class="list"
+  ></div>
+
+  <div class="controls">
+
+    <button
+      id="backLobbyBtn"
+      class="primary"
+      type="button"
+    >
+      대기실로
+    </button>
+
+    <button
+      id="resultLeaveBtn"
+      class="secondary"
+      type="button"
+    >
+      메인으로
+    </button>
+
+  </div>
+
+</section>
+
+</main>
+
+
+<!-- =========================
+     CHAT
+========================= -->
+
+<button
+  id="chatFab"
+  class="chat-fab"
+  type="button"
+  style="display:none"
+  aria-label="채팅 열기"
+>
+
+  💬
+
+  <span
+    id="chatUnread"
+    class="chat-unread"
+    style="display:none"
+  >
+    0
+  </span>
+
+</button>
+
+
+<aside
+  id="chatPanel"
+  class="chat-panel"
+  aria-hidden="true"
+>
+
+  <div class="chat-head">
+
+    <div>
+
+      <strong>
+        💬 방 채팅
+      </strong>
+
+      <div
+        id="chatRoomLabel"
+        class="muted"
+      >
+        방 ------
+      </div>
+
+    </div>
+
+    <button
+      id="chatCloseBtn"
+      class="tiny"
+      type="button"
+    >
+      닫기
+    </button>
+
+  </div>
+
+  <div
+    id="chatMessages"
+    class="chat-messages"
+  >
+
+    <div class="chat-empty">
+      아직 메시지가 없습니다.
+    </div>
+
+  </div>
+
+  <div class="chat-compose">
+
+    <input
+      id="chatInput"
+      maxlength="120"
+      autocomplete="off"
+      placeholder="메시지 입력"
+      aria-label="채팅 메시지"
+    >
+
+    <button
+      id="chatSendBtn"
+      class="primary"
+      type="button"
+    >
+      전송
+    </button>
+
+  </div>
+
+  <div class="chat-note">
+    심한 욕설은 자동으로 가려집니다.
+  </div>
+
+</aside>
+
+
+<script
+  type="module"
+  src="./online.js"
+></script>
+
 </body>
 </html>
