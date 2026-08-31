@@ -9,7 +9,9 @@ import {
   linkWithPopup,
   signInWithPopup,
   onAuthStateChanged,
-  signOut
+  signOut,
+  setPersistence,
+  browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 
 import {
@@ -44,6 +46,12 @@ const db =
 
 const googleProvider =
   new GoogleAuthProvider();
+
+// 로그인 상태를 브라우저에 저장하여 다음 접속 때 자동 복원
+await setPersistence(
+  auth,
+  browserLocalPersistence
+);
 
 
 /* =========================================================
